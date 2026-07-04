@@ -1,19 +1,21 @@
 // ==UserScript==
-// @name          LivePocket
-// @version      1.0 Remix
-// @description  LivePocket
-// @author       Remix
+// @name         LivePocket 姓名切换器
+// @version      2.0
+// @description  在 LivePocket 上自定义显示姓名
+// @author       andy lin
 // @match        https://livepocket.jp/*
+// @match        https://t.livepocket.jp/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @run-at       document-start
+// @noframes
 // ==/UserScript==
 
 (function() {
   'use strict';
   
-  // Block non-target domains
-  if (location.hostname !== 'livepocket.jp') return;
-  
-  // ==================== Constants (same as original, different names) ====================
+  // ==================== Constants ====================
   const DATA_KEY = 'lp_display_data';
   const TOGGLE_KEY = 'lp_display_on';
   const FIELD_LIST = ['氏名', '生年月日', '性別'];
@@ -25,7 +27,7 @@
   
   let pageType = null;
   
-  // ==================== Helper Functions (IDENTICAL logic) ====================
+  // ==================== Helper Functions ====================
   
   const checkActive = () => localStorage.getItem(TOGGLE_KEY) === 'true';
   const setActive = (val) => localStorage.setItem(TOGGLE_KEY, val ? 'true' : 'false');
@@ -49,7 +51,6 @@
   };
   
   const parseName = (fullName) => {
-    // IDENTICAL to original: split on FIRST space only
     if (!fullName) return ['', ''];
     const idx = fullName.search(/\s/);
     if (idx === -1) return [fullName.trim(), ''];
@@ -67,7 +68,6 @@
   };
   
   const getNameNode = (container, which) => {
-    // IDENTICAL logic
     const children = [...container.childNodes];
     for (let i = 0; i < children.length; i++) {
       const n = children[i];
@@ -80,7 +80,7 @@
     return null;
   };
   
-  // ==================== Mirror Functions (IDENTICAL) ====================
+  // ==================== Mirror Functions ====================
   
   const updateMirrors = (replacements) => {
     MIRROR_SELECTORS.forEach(sel => {
@@ -125,7 +125,7 @@
     return undefined;
   };
   
-  // ==================== CSS (IDENTICAL strategy) ====================
+  // ==================== CSS ====================
   
   const generateCSS = () => {
     const hideSel = [...MIRROR_SELECTORS, TICKET_SELECTOR].join(',');
@@ -166,7 +166,7 @@
     document.addEventListener('DOMContentLoaded', initCSS);
   }
   
-  // ==================== Page Visibility (IDENTICAL: display none) ====================
+  // ==================== Page Visibility ====================
   
   const hidePage = () => {
     if (document.documentElement) 
@@ -189,7 +189,7 @@
     requestAnimationFrame(loop);
   }
   
-  // ==================== Data Storage (IDENTICAL) ====================
+  // ==================== Data Storage ====================
   
   const readData = () => {
     try {
@@ -205,13 +205,13 @@
     } catch(e) {}
   };
   
-  const safeHtml = (text) => {
+  const escapeHtml = (text) => {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
   };
   
-  // ==================== Form Guard (IDENTICAL) ====================
+  // ==================== Form Guard ====================
   
   const guardForm = () => {
     if (pageType !== 'edit') return;
@@ -226,7 +226,7 @@
     }
   };
   
-  // ==================== Extract Data (IDENTICAL logic) ====================
+  // ==================== Extract Data ====================
   
   const pullData = () => {
     const result = {};
@@ -276,7 +276,7 @@
     return result;
   };
   
-  // ==================== Mark Processed (IDENTICAL) ====================
+  // ==================== Mark Processed ====================
   
   const markDone = () => {
     if (pageType === 'view') {
@@ -308,7 +308,7 @@
     markMirrors();
   };
   
-  // ==================== Apply (IDENTICAL logic) ====================
+  // ==================== Apply ====================
   
   const applyAll = () => {
     const rep = readData();
@@ -328,7 +328,7 @@
         if (!p.hasAttribute('data-original')) 
           p.setAttribute('data-original', p.textContent.trim());
         
-        const val = label === '性別' ? '未選択' : rep[label];
+        const val = rep[label];
         if (val !== undefined && val.trim() !== '') p.textContent = val;
         p.setAttribute('data-replaced', 'true');
       });
@@ -370,7 +370,7 @@
         if (!field.hasAttribute('data-original')) 
           field.setAttribute('data-original', tn.textContent.trim());
         
-        const val = label === '性別' ? '未選択' : rep[label];
+        const val = rep[label];
         if (val !== undefined && val.trim() !== '') tn.textContent = val;
         field.setAttribute('data-replaced', 'true');
       });
@@ -399,7 +399,7 @@
     updateMirrors(rep);
   };
   
-  // ==================== Reset (IDENTICAL) ====================
+  // ==================== Reset ====================
   
   const resetAll = () => {
     if (pageType === 'view') {
@@ -450,21 +450,23 @@
     applyAll();
   };
   
-  // ==================== Settings Panel (NEW UI but SAME functionality) ====================
+  // ==================== Settings Panel ====================
   
   const showPanel = () => {
-    const existing = document.getElementById('lp-panel-remix');
+    const existing = document.getElementById('lp-panel');
     if (existing) existing.remove();
     
     const data = readData();
     const on = checkActive();
-    const editable = FIELD_LIST.filter(f => f !== '性別');
     
     const panel = document.createElement('div');
-    panel.id = 'lp-panel-remix';
+    panel.id = 'lp-panel';
+    
+    const genderOptions = ['未选择', '男性', '女性'];
+    
     panel.innerHTML = `
-      <div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:999998;animation:lp-fade-in 0.3s ease" id="lp-bg"></div>
-      <div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:16px;padding:24px;width:340px;max-height:85vh;overflow-y:auto;z-index:999999;box-shadow:0 20px 60px rgba(0,0,0,0.5);font-family:'Helvetica Neue',Arial,sans-serif;animation:lp-slide-in 0.3s ease">
+      <div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:999998" id="lp-bg"></div>
+      <div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:16px;padding:24px;width:340px;max-height:85vh;overflow-y:auto;z-index:999999;box-shadow:0 20px 60px rgba(0,0,0,0.5);font-family:'Helvetica Neue',Arial,sans-serif">
         <div style="text-align:center;margin-bottom:16px">
           <h3 style="margin:0 0 8px;font-size:20px;color:#333">LivePocket 显示设置</h3>
           <div style="display:inline-block;padding:6px 12px;border-radius:20px;font-size:11px;font-weight:600;background:${on ? '#e8f5e9' : '#f5f5f5'};color:${on ? '#4caf50' : '#999'}">
@@ -472,31 +474,33 @@
           </div>
         </div>
         
-        ${editable.map(field => `
+        ${FIELD_LIST.filter(f => f !== '性別').map(field => `
           <div style="margin-bottom:12px">
             <label style="display:block;font-size:12px;font-weight:600;color:#666;margin-bottom:6px">${field}</label>
-            <input type="text" class="lp-input-field" data-label="${field}" value="${safeHtml(data[field] || '')}" placeholder="留空则保持原样" style="width:100%;padding:10px;border:2px solid #e0e0e0;border-radius:8px;font-size:13px;transition:all 0.2s;box-sizing:border-box" onfocus="this.style.borderColor='#2196f3';this.style.boxShadow='0 0 0 3px rgba(33,150,243,0.1)'" onblur="this.style.borderColor='#e0e0e0';this.style.boxShadow='none'">
+            <input type="text" class="lp-input-field" data-label="${field}" value="${escapeHtml(data[field] || '')}" placeholder="留空则保持原样" style="width:100%;padding:10px;border:2px solid #e0e0e0;border-radius:8px;font-size:13px;box-sizing:border-box">
           </div>
         `).join('')}
         
-        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:16px;padding-top:16px;border-top:1px solid #eee">
-          <button id="lp-btn-save" style="flex:1;padding:10px;background:#4caf50;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px;transition:all 0.2s">保存</button>
-          <button id="lp-btn-refresh" style="flex:1;padding:10px;background:#2196f3;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px">刷新</button>
-          <button id="lp-btn-toggle" style="flex:1;padding:10px;background:${on ? '#ff5722' : '#4caf50'};color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px">${on ? '禁用' : '启用'}</button>
-          <button id="lp-btn-close" style="flex:1;padding:10px;background:#9e9e9e;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px">关闭</button>
+        <div style="margin-bottom:16px">
+          <label style="display:block;font-size:12px;font-weight:600;color:#666;margin-bottom:6px">性別</label>
+          <div style="display:flex;gap:12px">
+            ${genderOptions.map(opt => `
+              <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:13px;color:#333">
+                <input type="radio" name="lp-gender" value="${opt}" ${data['性別'] === opt || (!data['性別'] && opt === '未选择') ? 'checked' : ''}>
+                <span>${opt}</span>
+              </label>
+            `).join('')}
+          </div>
+        </div>
+        
+        <div style="display:flex;gap:8px;justify-content:center;margin-top:16px;padding-top:16px;border-top:1px solid #eee">
+          <button id="lp-btn-save" style="flex:1;padding:10px;background:#4caf50;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px">保存</button>
+          <button id="lp-btn-close" style="flex:1;padding:10px;background:#9e9e9e;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px">取消</button>
         </div>
       </div>
     `;
     
     document.body.appendChild(panel);
-    
-    // Add animations
-    const animStyle = document.createElement('style');
-    animStyle.textContent = `
-      @keyframes lp-fade-in { from { opacity: 0; } to { opacity: 1; } }
-      @keyframes lp-slide-in { from { transform: translate(-50%, -48%); opacity: 0; } to { transform: translate(-50%, -50%); opacity: 1; } }
-    `;
-    document.head.appendChild(animStyle);
     
     // Events
     document.getElementById('lp-bg').addEventListener('click', () => panel.remove());
@@ -507,30 +511,18 @@
       panel.querySelectorAll('.lp-input-field').forEach(input => {
         newData[input.dataset.label] = input.value.trim();
       });
+      const genderRadio = panel.querySelector('input[name="lp-gender"]:checked');
+      if (genderRadio) {
+        newData['性別'] = genderRadio.value;
+      }
       writeData(newData);
       setActive(true);
       resetAll();
       panel.remove();
     });
-    
-    document.getElementById('lp-btn-refresh').addEventListener('click', () => {
-      if (!confirm('从页面重新获取数据？')) return;
-      resetAll();
-      const pageData = pullData();
-      writeData(Object.keys(pageData).length > 0 ? pageData : { ...EMPTY_DATA });
-      panel.remove();
-      showPanel();
-    });
-    
-    document.getElementById('lp-btn-toggle').addEventListener('click', () => {
-      if (!confirm('切换启用状态？')) return;
-      setActive(!on);
-      resetAll();
-      panel.remove();
-    });
   };
   
-  // ==================== Double-click (IDENTICAL) ====================
+  // ==================== Double-click ====================
   
   const initDblClick = () => {
     const h1 = document.querySelector('h1.heading01');
@@ -545,7 +537,7 @@
     }
   };
   
-  // ==================== Main Logic (IDENTICAL) ====================
+  // ==================== Main Logic ====================
   
   const process = () => {
     pageType = document.querySelector('.account-table__block') 
@@ -576,7 +568,7 @@
     });
   };
   
-  // ==================== Init (IDENTICAL) ====================
+  // ==================== Init ====================
   
   let inited = false;
   let revealed = false;
@@ -618,7 +610,7 @@
         writeData(Object.keys(pd).length > 0 ? pd : { ...EMPTY_DATA });
         markDone();
       } else if (checkActive()) {
-        process();
+        applyAll();
       } else {
         markDone();
       }
@@ -626,14 +618,10 @@
       initDblClick();
       startObs();
       doReveal();
-      
-      if (typeof GM_registerMenuCommand !== 'undefined') {
-        GM_registerMenuCommand('打开设置', showPanel);
-        GM_registerMenuCommand('重新应用', resetAll);
-      }
     } else {
-      if (checkActive()) applyAll();
-      else markDone();
+      if (checkActive()) {
+        applyAll();
+      }
     }
   };
   
@@ -641,6 +629,17 @@
   
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', run);
+  }
+  
+  const loop = () => {
+    if (!inited) {
+      run();
+      requestAnimationFrame(loop);
+    }
+  };
+  
+  if (!inited) {
+    requestAnimationFrame(loop);
   }
   
 })();
