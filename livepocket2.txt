@@ -1,646 +1,963 @@
 // ==UserScript==
-// @name         Custom Display for LivePocket
-// @version      1.0 Remix
-// @description  Customize display names on LivePocket (UI redesign, same functionality)
-// @author       Remix
+// @name         LivePocket 姓名切换
+// @version      2.0
+// @description   LivePocket 上自定义姓名
+// @author       andy lin
 // @match        https://livepocket.jp/*
+// @match        https://t.livepocket.jp/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @run-at       document-start
+// @noframes
 // ==/UserScript==
 
-(function() {
+(async function() {
   'use strict';
   
-  // Block non-target domains
-  if (location.hostname !== 'livepocket.jp') return;
+  // ==================== Configuration ====================
+  const CONFIG = {
+    storage: {
+      data: 'lp_switcher_data',
+      enabled: 'lp_switcher_on',
+      version: 'lp_switcher_ver',
+      timestamp: 'lp_switcher_ts',
+      selectors: 'lp_switcher_sel'
+    },
+    version: '2.0',
+    expirationDays: 30,
+    retryLimit: 90,
+    revealTimeout: 1800
+  };
   
-  // ==================== Constants (same as original, different names) ====================
-  const DATA_KEY = 'lp_display_data';
-  const TOGGLE_KEY = 'lp_display_on';
-  const FIELD_LIST = ['氏名', '生年月日', '性別'];
-  const HEADER_SELECTOR = '.header-account__name span[data-wovn-ignore]';
-  const TICKET_SELECTOR = '.my-ticket-info__name';
-  const TOP_SELECTOR = '.my-top__heading01 span[data-wovn-ignore]';
-  const MIRROR_SELECTORS = [HEADER_SELECTOR, TOP_SELECTOR];
-  const EMPTY_DATA = { '氏名': '', '生年月日': '', '性別': '' };
+  // Field mappings (internal key -> Japanese label)
+  const FIELDS = {
+    name: '氏名',
+    birth: '生年月日',
+    gender: '性別'
+  };
   
-  let pageType = null;
+  const FIELD_KEYS = Object.keys(FIELDS);
+  const DEFAULT_DATA = { [FIELDS.name]: '', [FIELDS.birth]: '', [FIELDS.gender]: '' };
   
-  // ==================== Helper Functions (IDENTICAL logic) ====================
+  // Default DOM selectors
+  const DEFAULT_SELECTORS = {
+    header: '.header-account__name span[data-wovn-ignore]',
+    ticket: '.my-ticket-info__name',
+    title: '.my-top__heading01 span[data-wovn-ignore]',
+    block: '.account-table__block',
+    data: '.account-table__data',
+    formTitle: '.form__title',
+    formField: '.form__field',
+    inputLast: 'input[name="user[last_name]"]',
+    blockFirst: '.form-name__block',
+    labelFirst: '.form-name__label',
+    fieldFirst: '.form-name__field[data-wovn-ignore]'
+  };
   
-  const checkActive = () => localStorage.getItem(TOGGLE_KEY) === 'true';
-  const setActive = (val) => localStorage.setItem(TOGGLE_KEY, val ? 'true' : 'false');
+  // ==================== State ====================
+  let state = {
+    page: null,
+    initialized: false,
+    revealed: false,
+    observerActive: false,
+    retryCount: 0,
+    selectors: null
+  };
   
-  const getFieldByLabel = (label) => {
-    const titles = document.querySelectorAll('.form__title');
-    for (const t of titles) {
-      if (t.textContent.trim() === label) {
-        const f = t.nextElementSibling;
-        if (f && f.classList.contains('form__field')) return f;
+  // ==================== Storage Helpers ====================
+  
+  const storage = {
+    get: (key) => {
+      try {
+        const val = localStorage.getItem(CONFIG.storage[key]);
+        return val ? JSON.parse(val) : null;
+      } catch(e) {
+        console.warn('[LP Switcher] Read error:', e);
+        return null;
       }
-    }
-    return null;
-  };
-  
-  const getTextNodeFromField = (field) => {
-    for (const n of field.childNodes) {
-      if (n.nodeType === 3 && n.textContent.trim()) return n;
-    }
-    return null;
-  };
-  
-  const parseName = (fullName) => {
-    // IDENTICAL to original: split on FIRST space only
-    if (!fullName) return ['', ''];
-    const idx = fullName.search(/\s/);
-    if (idx === -1) return [fullName.trim(), ''];
-    return [fullName.slice(0, idx).trim(), fullName.slice(idx + 1).trim()];
-  };
-  
-  const getFirstNameInput = () => {
-    const blocks = document.querySelectorAll('.form-name__block');
-    for (const b of blocks) {
-      const lb = b.querySelector('.form-name__label');
-      if (lb && lb.textContent.trim() === '名') 
-        return b.querySelector('.form-name__field[data-wovn-ignore]');
-    }
-    return null;
-  };
-  
-  const getNameNode = (container, which) => {
-    // IDENTICAL logic
-    const children = [...container.childNodes];
-    for (let i = 0; i < children.length; i++) {
-      const n = children[i];
-      if (n.nodeType === 1 && n.classList.contains('my-ticket-info__name-title') 
-           && n.textContent.trim() === which) {
-        const nx = children[i + 1];
-        if (nx && nx.nodeType === 3) return nx;
+    },
+    
+    set: (key, value) => {
+      try {
+        localStorage.setItem(CONFIG.storage[key], JSON.stringify(value));
+        return true;
+      } catch(e) {
+        console.error('[LP Switcher] Write error:', e);
+        return false;
       }
+    },
+    
+    remove: (key) => {
+      localStorage.removeItem(CONFIG.storage[key]);
     }
-    return null;
   };
   
-  // ==================== Mirror Functions (IDENTICAL) ====================
+  const isEnabled = () => storage.get('enabled') === true;
+  const setEnabled = (val) => storage.set('enabled', val);
   
-  const updateMirrors = (replacements) => {
-    MIRROR_SELECTORS.forEach(sel => {
-      document.querySelectorAll(sel).forEach(el => {
-        if (el.hasAttribute('data-replaced')) return;
-        if (!el.hasAttribute('data-original')) 
-          el.setAttribute('data-original', el.textContent.trim());
-        const val = replacements['氏名'];
-        if (val !== undefined && val.trim() !== '') el.textContent = val;
-        el.setAttribute('data-replaced', 'true');
-      });
-    });
+  const getAllData = () => {
+    const data = storage.get('data');
+    return data ? { ...DEFAULT_DATA, ...data } : { ...DEFAULT_DATA };
   };
   
-  const markMirrors = () => {
-    MIRROR_SELECTORS.forEach(sel => {
-      document.querySelectorAll(sel).forEach(el => {
-        if (!el.hasAttribute('data-replaced')) 
-          el.setAttribute('data-replaced', 'true');
-      });
-    });
+  const saveAllData = (data) => {
+    storage.set('data', data);
+    storage.set('version', CONFIG.version);
+    storage.set('timestamp', Date.now());
   };
   
-  const restoreMirrors = () => {
-    MIRROR_SELECTORS.forEach(sel => {
-      document.querySelectorAll(sel).forEach(el => {
-        if (!el.hasAttribute('data-replaced')) return;
-        if (el.hasAttribute('data-original')) 
-          el.textContent = el.getAttribute('data-original');
-        el.removeAttribute('data-replaced');
-      });
-    });
+  const isDataExpired = () => {
+    const ts = storage.get('timestamp');
+    if (!ts) return true;
+    const elapsed = Date.now() - ts;
+    const thirtyDays = CONFIG.expirationDays * 24 * 60 * 60 * 1000;
+    return elapsed > thirtyDays;
   };
   
-  const readMirror = () => {
-    for (const sel of MIRROR_SELECTORS) {
-      const el = document.querySelector(sel);
-      if (el) return el.hasAttribute('data-original') 
-        ? el.getAttribute('data-original') 
-        : el.textContent.trim();
-    }
-    return undefined;
+  const getSelectors = () => {
+    const saved = storage.get('selectors');
+    return saved ? { ...DEFAULT_SELECTORS, ...saved } : { ...DEFAULT_SELECTORS };
   };
   
-  // ==================== CSS (IDENTICAL strategy) ====================
-  
-  const generateCSS = () => {
-    const hideSel = [...MIRROR_SELECTORS, TICKET_SELECTOR].join(',');
-    const showSel = [...MIRROR_SELECTORS.map(x => x + '[data-replaced="true"]'), 
-                     TICKET_SELECTOR + '[data-replaced="true"]'].join(',');
-    return hideSel + ':not([data-replaced="true"]) { opacity: 0 !important; }' 
-         + showSel + '{ opacity: 1 !important; transition: opacity 0.2s ease }'
-         + '.account-table__data:not([data-replaced="true"]) { opacity: 0 !important; }'
-         + '.account-table__data[data-replaced="true"] { opacity: 1 !important; transition: opacity 0.2s ease }';
-  };
-  
-  const insertCSS = () => {
-    const root = document.documentElement;
-    if (root) {
-      if (!root.querySelector('style[data-css-ok]')) {
-        const style = document.createElement('style');
-        style.textContent = generateCSS();
-        style.setAttribute('data-css-ok', '1');
-        root.insertBefore(style, root.firstChild);
-      }
+  const saveSelectors = (newSel) => {
+    if (storage.set('selectors', newSel)) {
+      state.selectors = newSel;
       return true;
     }
     return false;
   };
   
-  const initCSS = () => {
-    if (insertCSS()) return;
-    let tries = 0;
-    const retry = () => {
-      if (insertCSS()) return;
-      if (tries++ < 60) requestAnimationFrame(retry);
-    };
-    requestAnimationFrame(retry);
-  };
+  // ==================== DOM Helpers ====================
   
-  initCSS();
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initCSS);
-  }
+  const $ = (sel, parent = document) => parent.querySelector(sel);
+  const $$ = (sel, parent = document) => [...parent.querySelectorAll(sel)];
   
-  // ==================== Page Visibility (IDENTICAL: display none) ====================
-  
-  const hidePage = () => {
-    if (document.documentElement) 
-      document.documentElement.style.setProperty('display', 'none', 'important');
-  };
-  
-  const showPage = () => {
-    if (document.documentElement) 
-      document.documentElement.style.removeProperty('display');
-  };
-  
-  hidePage();
-  if (!document.documentElement) {
-    let t = 0;
-    const loop = () => {
-      hidePage();
-      if (document.documentElement) return;
-      if (t++ < 60) requestAnimationFrame(loop);
-    };
-    requestAnimationFrame(loop);
-  }
-  
-  // ==================== Data Storage (IDENTICAL) ====================
-  
-  const readData = () => {
-    try {
-      const saved = localStorage.getItem(DATA_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch(e) {}
-    return { ...EMPTY_DATA };
-  };
-  
-  const writeData = (data) => {
-    try {
-      localStorage.setItem(DATA_KEY, JSON.stringify(data));
-    } catch(e) {}
-  };
-  
-  const safeHtml = (text) => {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-  };
-  
-  // ==================== Form Guard (IDENTICAL) ====================
-  
-  const guardForm = () => {
-    if (pageType !== 'edit') return;
-    const input = document.querySelector('input[name="user[last_name]"]');
-    const form = input && input.closest('form');
-    if (form && !form.hasAttribute('data-lp-guard')) {
-      form.setAttribute('data-lp-guard', 'true');
-      form.addEventListener('submit', () => {
-        if (input.hasAttribute('data-original')) 
-          input.value = input.getAttribute('data-original');
-      }, true);
-    }
-  };
-  
-  // ==================== Extract Data (IDENTICAL logic) ====================
-  
-  const pullData = () => {
-    const result = {};
-    
-    if (pageType === 'view') {
-      document.querySelectorAll('.account-table__block').forEach(block => {
-        const h = block.querySelector('h3.account-table__title');
-        const p = block.querySelector('p.account-table__data');
-        if (!h || !p) return;
-        const label = h.textContent.trim();
-        if (!FIELD_LIST.includes(label)) return;
-        result[label] = p.hasAttribute('data-original') 
-          ? p.getAttribute('data-original') 
-          : p.textContent.trim();
-      });
-    } else if (pageType === 'edit') {
-      const input = document.querySelector('input[name="user[last_name]"]');
-      if (input) result['氏名'] = input.hasAttribute('data-original') 
-        ? input.getAttribute('data-original') 
-        : input.value.trim();
-      
-      ['性別', '生年月日'].forEach(label => {
-        const field = getFieldByLabel(label);
-        if (!field) return;
-        const tn = getTextNodeFromField(field);
-        if (tn) result[label] = field.hasAttribute('data-original') 
-          ? field.getAttribute('data-original') 
-          : tn.textContent.trim();
-      });
-    }
-    
-    if (result['氏名'] === undefined) {
-      const ticket = document.querySelector(TICKET_SELECTOR);
-      if (ticket) {
-        const tn = getNameNode(ticket, '氏');
-        if (tn) result['氏名'] = ticket.hasAttribute('data-original') 
-          ? ticket.getAttribute('data-original') 
-          : tn.textContent.trim();
+  const getTextNode = (el) => {
+    if (!el) return null;
+    for (const node of el.childNodes) {
+      if (node.nodeType === 3 && node.textContent.trim()) {
+        return node;
       }
     }
-    
-    if (result['氏名'] === undefined) {
-      const mirror = readMirror();
-      if (mirror) result['氏名'] = mirror;
-    }
-    
-    return result;
+    return null;
   };
   
-  // ==================== Mark Processed (IDENTICAL) ====================
-  
-  const markDone = () => {
-    if (pageType === 'view') {
-      document.querySelectorAll('.account-table__data').forEach(p => {
-        if (!p.hasAttribute('data-replaced')) 
-          p.setAttribute('data-replaced', 'true');
-      });
-    } else if (pageType === 'edit') {
-      const input = document.querySelector('input[name="user[last_name]"]');
-      if (input && !input.hasAttribute('data-replaced')) 
-        input.setAttribute('data-replaced', 'true');
-      
-      const firstName = getFirstNameInput();
-      if (firstName && !firstName.hasAttribute('data-replaced')) 
-        firstName.setAttribute('data-replaced', 'true');
-      
-      ['性別', '生年月日'].forEach(label => {
-        const field = getFieldByLabel(label);
-        if (!field || field.hasAttribute('data-replaced')) return;
-        field.setAttribute('data-replaced', 'true');
-      });
-    }
-    
-    document.querySelectorAll(TICKET_SELECTOR).forEach(s => {
-      if (!s.hasAttribute('data-replaced')) 
-        s.setAttribute('data-replaced', 'true');
-    });
-    
-    markMirrors();
-  };
-  
-  // ==================== Apply (IDENTICAL logic) ====================
-  
-  const applyAll = () => {
-    const rep = readData();
-    
-    if (pageType === 'view') {
-      document.querySelectorAll('.account-table__block').forEach(block => {
-        const h = block.querySelector('h3.account-table__title');
-        const p = block.querySelector('p.account-table__data');
-        if (!h || !p) return;
-        const label = h.textContent.trim();
-        if (!FIELD_LIST.includes(label)) {
-          if (!p.hasAttribute('data-replaced')) 
-            p.setAttribute('data-replaced', 'true');
-          return;
+  const findFieldByHeading = (heading) => {
+    const titles = $$(state.selectors.formTitle);
+    for (const title of titles) {
+      if (title.textContent.trim() === heading) {
+        const field = title.nextElementSibling;
+        if (field && field.classList.contains(state.selectors.formField.replace('.', ''))) {
+          return field;
         }
-        if (p.hasAttribute('data-replaced')) return;
-        if (!p.hasAttribute('data-original')) 
-          p.setAttribute('data-original', p.textContent.trim());
-        
-        const val = label === '性別' ? '未選択' : rep[label];
-        if (val !== undefined && val.trim() !== '') p.textContent = val;
-        p.setAttribute('data-replaced', 'true');
-      });
+      }
+    }
+    return null;
+  };
+  
+  const findFirstNameField = () => {
+    const blocks = $$(state.selectors.blockFirst);
+    for (const block of blocks) {
+      const label = $(state.selectors.labelFirst, block);
+      if (label && label.textContent.trim() === '名') {
+        return $(state.selectors.fieldFirst, block);
+      }
+    }
+    return null;
+  };
+  
+  const findNameNode = (container, title) => {
+    const children = [...container.childNodes];
+    for (let i = 0; i < children.length; i++) {
+      const node = children[i];
+      if (node.nodeType === 1 && 
+          node.classList.contains('my-ticket-info__name-title') &&
+          node.textContent.trim() === title) {
+        const next = children[i + 1];
+        if (next && next.nodeType === 3) {
+          return next;
+        }
+      }
+    }
+    return null;
+  };
+  
+  const splitName = (full) => {
+    if (!full || typeof full !== 'string') return ['', ''];
+    const trimmed = full.trim();
+    if (!trimmed) return ['', ''];
+    const parts = trimmed.split(/[\s\u3000\t\n\r]+/);
+    if (parts.length === 1) return [parts[0], ''];
+    return [parts[0], parts.slice(1).join(' ')];
+  };
+  
+  // ==================== CSS Injection ====================
+  
+  const css = {
+    text: `
+      ${state.selectors.header}, ${state.selectors.title}, ${state.selectors.ticket}, ${state.selectors.data} {
+        transition: opacity 0.25s ease !important;
+      }
+      ${state.selectors.header}:not([data-lp-ok]), ${state.selectors.title}:not([data-lp-ok]), ${state.selectors.ticket}:not([data-lp-ok]), ${state.selectors.data}:not([data-lp-ok]) {
+        opacity: 0 !important;
+        visibility: hidden !important;
+      }
+      ${state.selectors.header}[data-lp-ok="1"], ${state.selectors.title}[data-lp-ok="1"], ${state.selectors.ticket}[data-lp-ok="1"], ${state.selectors.data}[data-lp-ok="1"] {
+        opacity: 1 !important;
+        visibility: visible !important;
+      }
+    `,
+    
+    inject: () => {
+      const id = 'lp-style-' + Date.now();
+      const existing = $(`style[data-lp-id]`);
+      if (existing) existing.remove();
       
-      document.querySelectorAll('.account-table__data:not([data-replaced])')
-        .forEach(p => p.setAttribute('data-replaced', 'true'));
-        
-    } else if (pageType === 'edit') {
-      guardForm();
+      const style = document.createElement('style');
+      style.setAttribute('data-lp-id', id);
+      style.textContent = css.text;
       
-      const input = document.querySelector('input[name="user[last_name]"]');
-      if (input && !input.hasAttribute('data-replaced')) {
-        if (!input.hasAttribute('data-original')) 
-          input.setAttribute('data-original', input.value.trim());
-        
-        const val = rep['氏名'];
-        if (val !== undefined && val.trim() !== '') {
-          const parts = parseName(val);
-          input.value = parts[0];
+      if (document.documentElement) {
+        document.documentElement.insertBefore(style, document.documentElement.firstChild);
+        return true;
+      }
+      return false;
+    },
+    
+    ensure: () => {
+      if (css.inject()) return true;
+      let tries = 0;
+      const retry = () => {
+        if (css.inject()) return;
+        if (tries++ < 60) requestAnimationFrame(retry);
+      };
+      requestAnimationFrame(retry);
+      return false;
+    }
+  };
+  
+  // ==================== Page Visibility ====================
+  
+  const page = {
+    hide: () => {
+      if (document.documentElement) {
+        document.documentElement.style.cssText += ';visibility:hidden!important;';
+      }
+    },
+    
+    show: () => {
+      if (document.documentElement) {
+        document.documentElement.style.removeProperty('visibility');
+      }
+      state.revealed = true;
+    },
+    
+    autoShow: () => {
+      if (state.revealed) return;
+      setTimeout(() => page.show(), CONFIG.revealTimeout);
+      if (!document.documentElement) {
+        let t = 0;
+        const check = () => {
+          page.hide();
+          if (document.documentElement) return;
+          if (t++ < 60) requestAnimationFrame(check);
+        };
+        requestAnimationFrame(check);
+      }
+    }
+  };
+  
+  // ==================== Data Extraction ====================
+  
+  const extract = {
+    fromPage: () => {
+      const result = {};
+      try {
+        if (state.page === 'view') {
+          $$(state.selectors.block).forEach(block => {
+            const h = $('h3.account-table__title', block);
+            const d = $(state.selectors.data, block);
+            if (!h || !d) return;
+            const label = h.textContent.trim();
+            if (!FIELD_KEYS.map(k => FIELDS[k]).includes(label)) return;
+            result[label] = d.hasAttribute('data-lp-orig') 
+              ? d.getAttribute('data-lp-orig') 
+              : d.textContent.trim();
+          });
+        } else if (state.page === 'edit') {
+          const input = $(state.selectors.inputLast);
+          if (input) {
+            result[FIELDS.name] = input.hasAttribute('data-lp-orig') 
+              ? input.getAttribute('data-lp-orig') 
+              : input.value.trim();
+          }
           
-          const firstName = getFirstNameInput();
-          if (firstName) {
-            if (!firstName.hasAttribute('data-original')) 
-              firstName.setAttribute('data-original', firstName.textContent.trim());
-            if (parts[1]) firstName.textContent = parts[1];
-            firstName.setAttribute('data-replaced', 'true');
+          [FIELDS.gender, FIELDS.birth].forEach(label => {
+            const field = findFieldByHeading(label);
+            if (!field) return;
+            const tn = getTextNode(field);
+            if (tn) {
+              result[label] = field.hasAttribute('data-lp-orig') 
+                ? field.getAttribute('data-lp-orig') 
+                : tn.textContent.trim();
+            }
+          });
+        }
+        
+        // Try ticket info
+        if (!result[FIELDS.name]) {
+          const ticket = $(state.selectors.ticket);
+          if (ticket) {
+            const node = findNameNode(ticket, '氏');
+            if (node) {
+              result[FIELDS.name] = ticket.hasAttribute('data-lp-orig') 
+                ? ticket.getAttribute('data-lp-orig') 
+                : node.textContent.trim();
+            }
           }
         }
-        input.setAttribute('data-replaced', 'true');
+        
+        // Try header mirror
+        if (!result[FIELDS.name]) {
+          const mirror = extract.fromMirror();
+          if (mirror) result[FIELDS.name] = mirror;
+        }
+      } catch(e) {
+        console.error('[LP Switcher] Extract error:', e);
+      }
+      return result;
+    },
+    
+    fromMirror: () => {
+      const sel = [state.selectors.header, state.selectors.title];
+      for (const s of sel) {
+        const el = $(s);
+        if (el) {
+          return el.hasAttribute('data-lp-orig') 
+            ? el.getAttribute('data-lp-orig') 
+            : el.textContent.trim();
+        }
+      }
+      return null;
+    }
+  };
+  
+  // ==================== Apply / Reset ====================
+  
+  const apply = {
+    toMirror: (data) => {
+      const mirrors = [state.selectors.header, state.selectors.title];
+      mirrors.forEach(sel => {
+        $$(sel).forEach(el => {
+          if (el.hasAttribute('data-lp-ok')) return;
+          if (!el.hasAttribute('data-lp-orig')) {
+            el.setAttribute('data-lp-orig', el.textContent.trim());
+          }
+          const val = data[FIELDS.name];
+          if (val && val.trim()) el.textContent = val;
+          el.setAttribute('data-lp-ok', '1');
+        });
+      });
+    },
+    
+    toAll: () => {
+      const data = getAllData();
+      
+      if (state.page === 'view') {
+        $$(state.selectors.block).forEach(block => {
+          const h = $('h3.account-table__title', block);
+          const d = $(state.selectors.data, block);
+          if (!h || !d) return;
+          const label = h.textContent.trim();
+          if (!FIELD_KEYS.map(k => FIELDS[k]).includes(label)) {
+            if (!d.hasAttribute('data-lp-ok')) d.setAttribute('data-lp-ok', '1');
+            return;
+          }
+          if (d.hasAttribute('data-lp-ok')) return;
+          if (!d.hasAttribute('data-lp-orig')) {
+            d.setAttribute('data-lp-orig', d.textContent.trim());
+          }
+          const val = label === FIELDS.gender ? 'Not Selected' : data[label];
+          if (val && val.trim()) d.textContent = val;
+          d.setAttribute('data-lp-ok', '1');
+        });
+        $$('${state.selectors.data}:not([data-lp-ok])').forEach(el => el.setAttribute('data-lp-ok', '1'));
+        
+      } else if (state.page === 'edit') {
+        apply.protectForm();
+        
+        const input = $(state.selectors.inputLast);
+        if (input && !input.hasAttribute('data-lp-ok')) {
+          if (!input.hasAttribute('data-lp-orig')) {
+            input.setAttribute('data-lp-orig', input.value.trim());
+          }
+          const val = data[FIELDS.name];
+          if (val && val.trim()) {
+            const [last, first] = splitName(val);
+            input.value = last;
+            const firstField = findFirstNameField();
+            if (firstField) {
+              if (!firstField.hasAttribute('data-lp-orig')) {
+                firstField.setAttribute('data-lp-orig', firstField.textContent.trim());
+              }
+              if (first) firstField.textContent = first;
+              firstField.setAttribute('data-lp-ok', '1');
+            }
+          }
+          input.setAttribute('data-lp-ok', '1');
+        }
+        
+        [FIELDS.gender, FIELDS.birth].forEach(label => {
+          const field = findFieldByHeading(label);
+          if (!field || field.hasAttribute('data-lp-ok')) return;
+          const tn = getTextNode(field);
+          if (!tn) return;
+          if (!field.hasAttribute('data-lp-orig')) {
+            field.setAttribute('data-lp-orig', tn.textContent.trim());
+          }
+          const val = label === FIELDS.gender ? 'Not Selected' : data[label];
+          if (val && val.trim()) tn.textContent = val;
+          field.setAttribute('data-lp-ok', '1');
+        });
       }
       
-      ['性別', '生年月日'].forEach(label => {
-        const field = getFieldByLabel(label);
-        if (!field || field.hasAttribute('data-replaced')) return;
+      // Ticket info
+      $$(state.selectors.ticket).forEach(container => {
+        if (container.hasAttribute('data-lp-ok')) return;
+        const shi = findNameNode(container, '氏');
+        const mei = findNameNode(container, '名');
+        if (!shi) return;
         
-        const tn = getTextNodeFromField(field);
-        if (!tn) return;
+        if (!container.hasAttribute('data-lp-orig')) {
+          const origShi = shi.textContent.trim();
+          const origMei = mei ? mei.textContent.trim() : '';
+          container.setAttribute('data-lp-orig', origShi + '\u0000' + origMei);
+        }
         
-        if (!field.hasAttribute('data-original')) 
-          field.setAttribute('data-original', tn.textContent.trim());
+        const val = data[FIELDS.name];
+        if (val && val.trim()) {
+          const [last, first] = splitName(val);
+          shi.textContent = last;
+          if (mei && first) mei.textContent = first;
+        }
+        container.setAttribute('data-lp-ok', '1');
+      });
+      
+      apply.toMirror(data);
+    },
+    
+    protectForm: () => {
+      if (state.page !== 'edit') return;
+      const input = $(state.selectors.inputLast);
+      const form = input && input.closest('form');
+      if (form && !form.hasAttribute('data-lp-guard')) {
+        form.setAttribute('data-lp-guard', '1');
+        form.addEventListener('submit', () => {
+          if (input.hasAttribute('data-lp-orig')) {
+            input.value = input.getAttribute('data-lp-orig');
+          }
+        }, true);
+      }
+    },
+    
+    markOnly: () => {
+      try {
+        if (state.page === 'view') {
+          $$(state.selectors.data).forEach(el => {
+            if (!el.hasAttribute('data-lp-ok')) el.setAttribute('data-lp-ok', '1');
+          });
+        } else if (state.page === 'edit') {
+          const input = $(state.selectors.inputLast);
+          if (input && !input.hasAttribute('data-lp-ok')) {
+            input.setAttribute('data-lp-ok', '1');
+          }
+          const first = findFirstNameField();
+          if (first && !first.hasAttribute('data-lp-ok')) {
+            first.setAttribute('data-lp-ok', '1');
+          }
+          [FIELDS.gender, FIELDS.birth].forEach(label => {
+            const field = findFieldByHeading(label);
+            if (field && !field.hasAttribute('data-lp-ok')) {
+              field.setAttribute('data-lp-ok', '1');
+            }
+          });
+        }
         
-        const val = label === '性別' ? '未選択' : rep[label];
-        if (val !== undefined && val.trim() !== '') tn.textContent = val;
-        field.setAttribute('data-replaced', 'true');
+        $$(state.selectors.ticket).forEach(el => {
+          if (!el.hasAttribute('data-lp-ok')) el.setAttribute('data-lp-ok', '1');
+        });
+        
+        $$([state.selectors.header, state.selectors.title].join(',')).forEach(el => {
+          if (!el.hasAttribute('data-lp-ok')) el.setAttribute('data-lp-ok', '1');
+        });
+      } catch(e) {
+        console.error('[LP Switcher] Mark error:', e);
+      }
+    },
+    
+    reset: () => {
+      try {
+        const restore = (el, attr = 'data-lp-orig') => {
+          if (el.hasAttribute(attr)) {
+            if (el.tagName === 'INPUT') {
+              el.value = el.getAttribute(attr);
+            } else {
+              el.textContent = el.getAttribute(attr);
+            }
+          }
+          el.removeAttribute('data-lp-ok');
+        };
+        
+        if (state.page === 'view') {
+          $$(state.selectors.data + '[data-lp-ok]').forEach(el => restore(el));
+        } else if (state.page === 'edit') {
+          const input = $(state.selectors.inputLast);
+          if (input) restore(input);
+          
+          const first = findFirstNameField();
+          if (first) restore(first);
+          
+          [FIELDS.gender, FIELDS.birth].forEach(label => {
+            const field = findFieldByHeading(label);
+            if (field) restore(field);
+          });
+        }
+        
+        $$(state.selectors.ticket + '[data-lp-ok]').forEach(container => {
+          if (!container.hasAttribute('data-lp-ok')) return;
+          const parts = (container.getAttribute('data-lp-orig') || '').split('\u0000');
+          const shi = findNameNode(container, '氏');
+          const mei = findNameNode(container, '名');
+          if (shi) shi.textContent = parts[0] || '';
+          if (mei && parts[1]) mei.textContent = parts[1];
+          container.removeAttribute('data-lp-ok');
+        });
+        
+        // Restore mirrors
+        [state.selectors.header, state.selectors.title].forEach(sel => {
+          $$(sel + '[data-lp-ok]').forEach(el => restore(el));
+        });
+        
+        // Re-apply
+        if (isEnabled()) apply.toAll();
+      } catch(e) {
+        console.error('[LP Switcher] Reset error:', e);
+      }
+    }
+  };
+  
+  // ==================== UI Panel ====================
+  
+  const UI = {
+    create: () => {
+      const existing = $('#lp-panel-v2');
+      if (existing) existing.remove();
+      
+      const data = getAllData();
+      const on = isEnabled();
+      const sel = getSelectors();
+      
+      const panel = document.createElement('div');
+      panel.id = 'lp-panel-v2';
+      panel.innerHTML = `
+        <div class="lp-backdrop"></div>
+        <div class="lp-modal">
+          <div class="lp-header">
+            <span class="lp-icon">⚙️</span>
+            <span class="lp-title">Display Switcher</span>
+            <span class="lp-version">v${CONFIG.version}</span>
+          </div>
+          
+          <div class="lp-status ${on ? 'lp-on' : 'lp-off'}">
+            ${on ? '✅ Active' : '⏸ Inactive'}
+          </div>
+          
+          <div class="lp-fields">
+            ${FIELD_KEYS.filter(k => k !== 'gender').map(k => `
+              <div class="lp-field">
+                <label class="lp-label">${FIELDS[k]}</label>
+                <input class="lp-input" data-field="${FIELDS[k]}" value="${escapeHtmlString(data[FIELDS[k]] || '')}" placeholder="Leave empty to keep original">
+              </div>
+            `).join('')}
+            <div class="lp-field">
+              <label class="lp-label">${FIELDS.gender}</label>
+              <div class="lp-radio-group" data-field="${FIELDS.gender}">
+                <label class="lp-radio">
+                  <input type="radio" name="lp-gender" value="" ${!data[FIELDS.gender] || data[FIELDS.gender] === '' ? 'checked' : ''}>
+                  <span>不修改</span>
+                </label>
+                <label class="lp-radio">
+                  <input type="radio" name="lp-gender" value="男性" ${data[FIELDS.gender] === '男性' ? 'checked' : ''}>
+                  <span>男性</span>
+                </label>
+                <label class="lp-radio">
+                  <input type="radio" name="lp-gender" value="女性" ${data[FIELDS.gender] === '女性' ? 'checked' : ''}>
+                  <span>女性</span>
+                </label>
+              </div>
+            </div>
+          </div>
+          
+          <div class="lp-actions">
+            <button class="lp-btn lp-btn-save">保存</button>
+            <button class="lp-btn lp-btn-close">取消</button>
+          </div>
+          
+          <details class="lp-advanced">
+            <summary>Advanced: Custom Selectors</summary>
+            <div class="lp-selector-editor">
+              ${Object.entries(DEFAULT_SELECTORS).map(([key, val]) => `
+                <div class="lp-selector-row">
+                  <label class="lp-selector-label">${key}</label>
+                  <input class="lp-selector-input" data-key="${key}" value="${escapeHtmlString(sel[key] || val)}">
+                </div>
+              `).join('')}
+              <div class="lp-selector-actions">
+                <button class="lp-btn lp-btn-small lp-btn-save-sel">Save Selectors</button>
+                <button class="lp-btn lp-btn-small lp-btn-reset-sel">Reset to Default</button>
+              </div>
+            </div>
+          </details>
+        </div>
+      `;
+      
+      // Add styles
+      const style = document.createElement('style');
+      style.textContent = `
+        .lp-backdrop {
+          position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+          z-index: 999998; backdrop-filter: blur(2px);
+        }
+        .lp-modal {
+          position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          border-radius: 16px; padding: 24px; width: 380px; max-height: 90vh; overflow-y: auto;
+          z-index: 999999; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+          font-family: 'Segoe UI', system-ui, sans-serif; color: white;
+        }
+        .lp-header { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+        .lp-icon { font-size: 24px; }
+        .lp-title { font-size: 18px; font-weight: 700; flex: 1; }
+        .lp-version { font-size: 10px; opacity: 0.7; }
+        .lp-status {
+          text-align: center; padding: 8px; border-radius: 8px; margin-bottom: 16px;
+          font-weight: 600; font-size: 12px;
+        }
+        .lp-on { background: rgba(76,175,80,0.3); }
+        .lp-off { background: rgba(158,158,158,0.3); }
+        .lp-fields { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
+        .lp-field { display: flex; align-items: center; gap: 8px; }
+        .lp-label { width: 70px; font-size: 12px; font-weight: 600; }
+        .lp-input {
+          flex: 1; padding: 8px 12px; border: none; border-radius: 8px;
+          background: rgba(255,255,255,0.9); font-size: 12px; color: #333;
+        }
+        .lp-input:focus { outline: 2px solid #667eea; background: white; }
+        .lp-select {
+          flex: 1; padding: 8px 12px; border: none; border-radius: 8px;
+          background: rgba(255,255,255,0.9); font-size: 12px; color: #333;
+        }
+        .lp-select:focus { outline: 2px solid #667eea; background: white; }
+        .lp-radio-group {
+          display: flex; gap: 12px; align-items: center; flex: 1;
+        }
+        .lp-radio {
+          display: flex; align-items: center; gap: 4px; cursor: pointer;
+          font-size: 12px; color: white;
+        }
+        .lp-radio input[type="radio"] {
+          cursor: pointer;
+        }
+        .lp-actions {
+          display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+          padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.2);
+        }
+        .lp-btn {
+          padding: 8px 14px; border: none; border-radius: 8px;
+          background: rgba(255,255,255,0.9); color: #333; font-size: 11px;
+          font-weight: 600; cursor: pointer; transition: all 0.2s;
+        }
+        .lp-btn:hover { background: white; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+        .lp-btn-save { background: #4caf50; color: white; }
+        .lp-advanced { margin-top: 12px; font-size: 11px; }
+        .lp-advanced summary { cursor: pointer; color: rgba(255,255,255,0.8); margin-bottom: 8px; }
+        .lp-selector-editor { background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; }
+        .lp-selector-row { margin-bottom: 8px; }
+        .lp-selector-label { display: block; font-size: 10px; opacity: 0.7; margin-bottom: 2px; }
+        .lp-selector-input {
+          width: 100%; padding: 4px 8px; border: 1px solid rgba(255,255,255,0.3);
+          border-radius: 4px; background: rgba(255,255,255,0.1); color: white; font-size: 10px;
+          box-sizing: border-box;
+        }
+        .lp-selector-input:focus { outline: none; border-color: white; background: rgba(255,255,255,0.2); }
+        .lp-btn-small { padding: 6px 10px; font-size: 10px; }
+        .lp-btn-save-sel { background: #4caf50; color: white; }
+        .lp-btn-reset-sel { background: #f44336; color: white; }
+      `;
+      panel.appendChild(style);
+      document.body.appendChild(panel);
+      
+      // Event handlers
+      $('.lp-backdrop', panel).addEventListener('click', () => panel.remove());
+      $('.lp-btn-close', panel).addEventListener('click', () => panel.remove());
+      
+      $('.lp-btn-save', panel).addEventListener('click', () => {
+        const newData = {};
+        $$('.lp-input', panel).forEach(input => {
+          newData[input.dataset.field] = input.value.trim();
+        });
+        const genderRadio = panel.querySelector('input[name="lp-gender"]:checked');
+        if (genderRadio) {
+          newData[FIELDS.gender] = genderRadio.value;
+        }
+        saveAllData(newData);
+        setEnabled(true);
+        apply.reset();
+        panel.remove();
+        notify('✅ Saved!');
+      });
+      
+      $('.lp-btn-export', panel).addEventListener('click', () => {
+        const exportData = {
+          version: CONFIG.version,
+          timestamp: Date.now(),
+          data: getAllData(),
+          selectors: getSelectors()
+        };
+        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `lp-switcher-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        notify('📤 Exported!');
+      });
+      
+      $('.lp-btn-import', panel).addEventListener('click', () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+        input.onchange = (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            try {
+              const imported = JSON.parse(ev.target.result);
+              if (imported.data) saveAllData(imported.data);
+              if (imported.selectors) saveSelectors(imported.selectors);
+              apply.reset();
+              panel.remove();
+              UI.create();
+              notify('📥 Imported!');
+            } catch(err) {
+              alert('❌ Import failed: ' + err.message);
+            }
+          };
+          reader.readAsText(file);
+        };
+        input.click();
+      });
+      
+      $('.lp-btn-save-sel', panel).addEventListener('click', () => {
+        const newSel = { ...state.selectors };
+        $$('.lp-selector-input', panel).forEach(input => {
+          newSel[input.dataset.key] = input.value.trim();
+        });
+        if (saveSelectors(newSel)) {
+          css.ensure();
+          notify('✅ Selectors saved!');
+        }
+      });
+      
+      $('.lp-btn-reset-sel', panel).addEventListener('click', () => {
+        if (!confirm('Reset selectors to default?')) return;
+        storage.remove('selectors');
+        state.selectors = { ...DEFAULT_SELECTORS };
+        css.ensure();
+        panel.remove();
+        UI.create();
+        notify('🔄 Selectors reset!');
       });
     }
-    
-    document.querySelectorAll(TICKET_SELECTOR).forEach(s => {
-      if (s.hasAttribute('data-replaced')) return;
-      
-      const shi = getNameNode(s, '氏');
-      const mei = getNameNode(s, '名');
-      if (!shi) return;
-      
-      if (!s.hasAttribute('data-original')) 
-        s.setAttribute('data-original', 
-          shi.textContent.trim() + '\u0000' + (mei ? mei.textContent.trim() : ''));
-      
-      const val = rep['氏名'];
-      if (val !== undefined && val.trim() !== '') {
-        const parts = parseName(val);
-        shi.textContent = parts[0];
-        if (mei && parts[1]) mei.textContent = parts[1];
-      }
-      s.setAttribute('data-replaced', 'true');
-    });
-    
-    updateMirrors(rep);
   };
   
-  // ==================== Reset (IDENTICAL) ====================
+  // ==================== Notification ====================
   
-  const resetAll = () => {
-    if (pageType === 'view') {
-      document.querySelectorAll('.account-table__data[data-replaced]').forEach(p => {
-        if (p.hasAttribute('data-original')) 
-          p.textContent = p.getAttribute('data-original');
-        p.removeAttribute('data-replaced');
-      });
-    } else if (pageType === 'edit') {
-      const input = document.querySelector('input[name="user[last_name]"]');
-      if (input && input.hasAttribute('data-replaced')) {
-        if (input.hasAttribute('data-original')) 
-          input.value = input.getAttribute('data-original');
-        input.removeAttribute('data-replaced');
-      }
-      
-      const firstName = getFirstNameInput();
-      if (firstName && firstName.hasAttribute('data-replaced')) {
-        if (firstName.hasAttribute('data-original')) 
-          firstName.textContent = firstName.getAttribute('data-original');
-        firstName.removeAttribute('data-replaced');
-      }
-      
-      ['性別', '生年月日'].forEach(label => {
-        const field = getFieldByLabel(label);
-        if (!field || !field.hasAttribute('data-replaced')) return;
-        const tn = getTextNodeFromField(field);
-        if (tn && field.hasAttribute('data-original')) 
-          tn.textContent = field.getAttribute('data-original');
-        field.removeAttribute('data-replaced');
-      });
+  const notify = (msg) => {
+    const n = document.createElement('div');
+    n.textContent = msg;
+    n.style.cssText = `
+      position: fixed; top: 20px; right: 20px; z-index: 1000001;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white; padding: 14px 20px; border-radius: 10px;
+      font-size: 13px; font-weight: 600; box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+      animation: lp-notify-in 0.3s ease;
+    `;
+    document.body.appendChild(n);
+    setTimeout(() => {
+      n.style.animation = 'lp-notify-out 0.3s ease';
+      setTimeout(() => n.remove(), 300);
+    }, 2200);
+    
+    // Add animation
+    if (!document.getElementById('lp-keyframes')) {
+      const kf = document.createElement('style');
+      kf.id = 'lp-keyframes';
+      kf.textContent = `
+        @keyframes lp-notify-in { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes lp-notify-out { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(20px); } }
+      `;
+      document.head.appendChild(kf);
     }
-    
-    document.querySelectorAll(TICKET_SELECTOR).forEach(s => {
-      if (!s.hasAttribute('data-replaced')) return;
-      const shi = getNameNode(s, '氏');
-      const mei = getNameNode(s, '名');
-      const orig = s.getAttribute('data-original');
-      if (orig !== null) {
-        const parts = orig.split('\u0000');
-        if (shi) shi.textContent = parts[0];
-        if (mei && parts.length > 1) mei.textContent = parts[1];
-      }
-      s.removeAttribute('data-replaced');
-    });
-    
-    restoreMirrors();
-    applyAll();
   };
   
-  // ==================== Settings Panel (NEW UI but SAME functionality) ====================
+  // ==================== Double-click Handler ====================
   
-  const showPanel = () => {
-    const existing = document.getElementById('lp-panel-remix');
-    if (existing) existing.remove();
-    
-    const data = readData();
-    const on = checkActive();
-    const editable = FIELD_LIST.filter(f => f !== '性別');
-    
-    const panel = document.createElement('div');
-    panel.id = 'lp-panel-remix';
-    panel.innerHTML = `
-      <div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:999998;animation:lp-fade-in 0.3s ease" id="lp-bg"></div>
-      <div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:16px;padding:24px;width:340px;max-height:85vh;overflow-y:auto;z-index:999999;box-shadow:0 20px 60px rgba(0,0,0,0.5);font-family:'Helvetica Neue',Arial,sans-serif;animation:lp-slide-in 0.3s ease">
-        <div style="text-align:center;margin-bottom:16px">
-          <h3 style="margin:0 0 8px;font-size:20px;color:#333">LivePocket 显示设置</h3>
-          <div style="display:inline-block;padding:6px 12px;border-radius:20px;font-size:11px;font-weight:600;background:${on ? '#e8f5e9' : '#f5f5f5'};color:${on ? '#4caf50' : '#999'}">
-            ${on ? '已启用' : '未启用'}
-          </div>
-        </div>
-        
-        ${editable.map(field => `
-          <div style="margin-bottom:12px">
-            <label style="display:block;font-size:12px;font-weight:600;color:#666;margin-bottom:6px">${field}</label>
-            <input type="text" class="lp-input-field" data-label="${field}" value="${safeHtml(data[field] || '')}" placeholder="留空则保持原样" style="width:100%;padding:10px;border:2px solid #e0e0e0;border-radius:8px;font-size:13px;transition:all 0.2s;box-sizing:border-box" onfocus="this.style.borderColor='#2196f3';this.style.boxShadow='0 0 0 3px rgba(33,150,243,0.1)'" onblur="this.style.borderColor='#e0e0e0';this.style.boxShadow='none'">
-          </div>
-        `).join('')}
-        
-        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:16px;padding-top:16px;border-top:1px solid #eee">
-          <button id="lp-btn-save" style="flex:1;padding:10px;background:#4caf50;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px;transition:all 0.2s">保存</button>
-          <button id="lp-btn-refresh" style="flex:1;padding:10px;background:#2196f3;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px">刷新</button>
-          <button id="lp-btn-toggle" style="flex:1;padding:10px;background:${on ? '#ff5722' : '#4caf50'};color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px">${on ? '禁用' : '启用'}</button>
-          <button id="lp-btn-close" style="flex:1;padding:10px;background:#9e9e9e;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px">关闭</button>
-        </div>
-      </div>
-    `;
-    
-    document.body.appendChild(panel);
-    
-    // Add animations
-    const animStyle = document.createElement('style');
-    animStyle.textContent = `
-      @keyframes lp-fade-in { from { opacity: 0; } to { opacity: 1; } }
-      @keyframes lp-slide-in { from { transform: translate(-50%, -48%); opacity: 0; } to { transform: translate(-50%, -50%); opacity: 1; } }
-    `;
-    document.head.appendChild(animStyle);
-    
-    // Events
-    document.getElementById('lp-bg').addEventListener('click', () => panel.remove());
-    document.getElementById('lp-btn-close').addEventListener('click', () => panel.remove());
-    
-    document.getElementById('lp-btn-save').addEventListener('click', () => {
-      const newData = {};
-      panel.querySelectorAll('.lp-input-field').forEach(input => {
-        newData[input.dataset.label] = input.value.trim();
-      });
-      writeData(newData);
-      setActive(true);
-      resetAll();
-      panel.remove();
-    });
-    
-    document.getElementById('lp-btn-refresh').addEventListener('click', () => {
-      if (!confirm('从页面重新获取数据？')) return;
-      resetAll();
-      const pageData = pullData();
-      writeData(Object.keys(pageData).length > 0 ? pageData : { ...EMPTY_DATA });
-      panel.remove();
-      showPanel();
-    });
-    
-    document.getElementById('lp-btn-toggle').addEventListener('click', () => {
-      if (!confirm('切换启用状态？')) return;
-      setActive(!on);
-      resetAll();
-      panel.remove();
-    });
-  };
-  
-  // ==================== Double-click (IDENTICAL) ====================
-  
-  const initDblClick = () => {
-    const h1 = document.querySelector('h1.heading01');
+  const setupDblClick = () => {
+    const h1 = $('h1.heading01');
     if (h1 && !h1.hasAttribute('data-lp-dbl')) {
       h1.style.cursor = 'pointer';
-      h1.title = '双击打开设置';
+      h1.title = 'Double-click to open Display Switcher';
       h1.addEventListener('dblclick', (e) => {
         e.preventDefault();
-        showPanel();
+        UI.create();
       });
       h1.setAttribute('data-lp-dbl', '1');
     }
   };
   
-  // ==================== Main Logic (IDENTICAL) ====================
+  // ==================== Observer ====================
   
-  const process = () => {
-    pageType = document.querySelector('.account-table__block') 
-      ? 'view' 
-      : (document.querySelector('input[name="user[last_name]"]') ? 'edit' : null);
+  const startObserver = () => {
+    if (state.observerActive) return;
+    state.observerActive = true;
     
-    if (checkActive()) applyAll();
-    else markDone();
-  };
-  
-  let obsStarted = false;
-  const startObs = () => {
-    if (obsStarted) return;
-    obsStarted = true;
-    
-    let rid = null;
-    new MutationObserver(ms => {
-      if (!ms.some(m => m.addedNodes.length > 0)) return;
-      if (rid) cancelAnimationFrame(rid);
-      rid = requestAnimationFrame(() => {
-        process();
-        initDblClick();
-        rid = null;
+    let timer = null;
+    const observer = new MutationObserver(() => {
+      if (timer) cancelAnimationFrame(timer);
+      timer = requestAnimationFrame(() => {
+        if (isEnabled()) {
+          apply.toAll();
+        } else {
+          apply.markOnly();
+        }
+        setupDblClick();
+        timer = null;
       });
-    }).observe(document.documentElement || document, {
+    });
+    
+    observer.observe(document.documentElement || document, {
       childList: true,
       subtree: true
     });
   };
   
-  // ==================== Init (IDENTICAL) ====================
+  // ==================== Init ====================
   
-  let inited = false;
-  let revealed = false;
-  let tries = 0;
-  
-  const doReveal = () => {
-    if (revealed) return;
-    revealed = true;
-    showPage();
+  const detectPage = () => {
+    if ($(state.selectors.block)) return 'view';
+    if ($(state.selectors.inputLast)) return 'edit';
+    return null;
   };
   
-  setTimeout(doReveal, 1500);
-  
-  const run = () => {
-    const p = document.querySelector('.account-table__block') 
-      ? 'view' 
-      : (document.querySelector('input[name="user[last_name]"]') ? 'edit' : null);
+  const init = () => {
+    state.selectors = getSelectors();
+    css.ensure();
     
-    const hasExtra = !!document.querySelector(HEADER_SELECTOR) 
-                  || !!document.querySelectorAll(TICKET_SELECTOR).length;
-    
-    if (!p && !hasExtra) {
-      if (!inited) {
-        tries++;
-        if (tries > 90) { doReveal(); return; }
-        requestAnimationFrame(run);
+    if (state.initialized) {
+      if (isEnabled()) {
+        apply.toAll();
       }
       return;
     }
     
-    pageType = p;
-    guardForm();
+    const pageType = detectPage();
+    const hasMirror = $(state.selectors.header) || $$(state.selectors.ticket).length > 0;
     
-    if (!inited) {
-      inited = true;
-      
-      if (!localStorage.getItem(DATA_KEY)) {
-        const pd = pullData();
-        writeData(Object.keys(pd).length > 0 ? pd : { ...EMPTY_DATA });
-        markDone();
-      } else if (checkActive()) {
-        process();
-      } else {
-        markDone();
+    if (!pageType && !hasMirror) {
+      state.retryCount++;
+      if (state.retryCount > CONFIG.retryLimit) {
+        page.show();
+        return;
       }
-      
-      initDblClick();
-      startObs();
-      doReveal();
-      
-      if (typeof GM_registerMenuCommand !== 'undefined') {
-        GM_registerMenuCommand('打开设置', showPanel);
-        GM_registerMenuCommand('重新应用', resetAll);
-      }
+      requestAnimationFrame(init);
+      return;
+    }
+    
+    state.page = pageType;
+    apply.protectForm();
+    state.initialized = true;
+    
+    // Check expiration
+    if (isDataExpired()) {
+      console.info('[LP Switcher] Data expired, re-fetching...');
+      const pageData = extract.fromPage();
+      saveAllData(Object.keys(pageData).length > 0 ? pageData : { ...DEFAULT_DATA });
+    }
+    
+    // First run: extract from page
+    if (!storage.get('data')) {
+      const pageData = extract.fromPage();
+      saveAllData(Object.keys(pageData).length > 0 ? pageData : { ...DEFAULT_DATA });
+      apply.markOnly();
+    } else if (isEnabled()) {
+      apply.toAll();
     } else {
-      if (checkActive()) applyAll();
-      else markDone();
+      apply.markOnly();
+    }
+    
+    setupDblClick();
+    startObserver();
+    page.show();
+    
+    // Tampermonkey menu
+    if (typeof GM_registerMenuCommand !== 'undefined') {
+      GM_registerMenuCommand('设置', UI.create);
     }
   };
   
-  run();
+  // ==================== Main ====================
+  
+  page.autoShow();
+  state.selectors = getSelectors();
+  
+  const check = () => {
+    const pageType = detectPage();
+    const hasMirror = $(state.selectors.header) || $$(state.selectors.ticket).length > 0;
+    
+    if (!pageType && !hasMirror) {
+      if (!state.initialized) {
+        state.retryCount++;
+        if (state.retryCount > CONFIG.retryLimit) {
+          page.show();
+          return;
+        }
+        requestAnimationFrame(check);
+      }
+      return;
+    }
+    
+    init();
+  };
+  
+  check();
   
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', run);
+    document.addEventListener('DOMContentLoaded', check);
+  }
+  
+  const loop = () => {
+    if (!state.initialized) {
+      check();
+      requestAnimationFrame(loop);
+    }
+  };
+  
+  if (!state.initialized) {
+    requestAnimationFrame(loop);
   }
   
 })();
