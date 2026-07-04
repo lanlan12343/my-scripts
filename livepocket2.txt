@@ -1,0 +1,953 @@
+// ==UserScript==
+// @name         LivePocket Name Switcher (v2)
+// @version      2.0
+// @description  Customize display names on LivePocket (Complete UI overhaul)
+// @author       Custom
+// @match        https://livepocket.jp/*
+// @match        https://t.livepocket.jp/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @run-at       document-start
+// @noframes
+// ==/UserScript==
+
+(async function() {
+  'use strict';
+  
+  // ==================== Configuration ====================
+  const CONFIG = {
+    storage: {
+      data: 'lp_switcher_data',
+      enabled: 'lp_switcher_on',
+      version: 'lp_switcher_ver',
+      timestamp: 'lp_switcher_ts',
+      selectors: 'lp_switcher_sel'
+    },
+    version: '2.0',
+    expirationDays: 30,
+    retryLimit: 90,
+    revealTimeout: 1800
+  };
+  
+  // Field mappings (internal key -> Japanese label)
+  const FIELDS = {
+    name: '氏名',
+    birth: '生年月日',
+    gender: '性別'
+  };
+  
+  const FIELD_KEYS = Object.keys(FIELDS);
+  const DEFAULT_DATA = { [FIELDS.name]: '', [FIELDS.birth]: '', [FIELDS.gender]: '' };
+  
+  // Default DOM selectors
+  const DEFAULT_SELECTORS = {
+    header: '.header-account__name span[data-wovn-ignore]',
+    ticket: '.my-ticket-info__name',
+    title: '.my-top__heading01 span[data-wovn-ignore]',
+    block: '.account-table__block',
+    data: '.account-table__data',
+    formTitle: '.form__title',
+    formField: '.form__field',
+    inputLast: 'input[name="user[last_name]"]',
+    blockFirst: '.form-name__block',
+    labelFirst: '.form-name__label',
+    fieldFirst: '.form-name__field[data-wovn-ignore]'
+  };
+  
+  // ==================== State ====================
+  let state = {
+    page: null,
+    initialized: false,
+    revealed: false,
+    observerActive: false,
+    retryCount: 0,
+    selectors: null
+  };
+  
+  // ==================== Storage Helpers ====================
+  
+  const storage = {
+    get: (key) => {
+      try {
+        const val = localStorage.getItem(CONFIG.storage[key]);
+        return val ? JSON.parse(val) : null;
+      } catch(e) {
+        console.warn('[LP Switcher] Read error:', e);
+        return null;
+      }
+    },
+    
+    set: (key, value) => {
+      try {
+        localStorage.setItem(CONFIG.storage[key], JSON.stringify(value));
+        return true;
+      } catch(e) {
+        console.error('[LP Switcher] Write error:', e);
+        return false;
+      }
+    },
+    
+    remove: (key) => {
+      localStorage.removeItem(CONFIG.storage[key]);
+    }
+  };
+  
+  const isEnabled = () => storage.get('enabled') === true;
+  const setEnabled = (val) => storage.set('enabled', val);
+  
+  const getAllData = () => {
+    const data = storage.get('data');
+    return data ? { ...DEFAULT_DATA, ...data } : { ...DEFAULT_DATA };
+  };
+  
+  const saveAllData = (data) => {
+    storage.set('data', data);
+    storage.set('version', CONFIG.version);
+    storage.set('timestamp', Date.now());
+  };
+  
+  const isDataExpired = () => {
+    const ts = storage.get('timestamp');
+    if (!ts) return true;
+    const elapsed = Date.now() - ts;
+    const thirtyDays = CONFIG.expirationDays * 24 * 60 * 60 * 1000;
+    return elapsed > thirtyDays;
+  };
+  
+  const getSelectors = () => {
+    const saved = storage.get('selectors');
+    return saved ? { ...DEFAULT_SELECTORS, ...saved } : { ...DEFAULT_SELECTORS };
+  };
+  
+  const saveSelectors = (newSel) => {
+    if (storage.set('selectors', newSel)) {
+      state.selectors = newSel;
+      return true;
+    }
+    return false;
+  };
+  
+  // ==================== DOM Helpers ====================
+  
+  const $ = (sel, parent = document) => parent.querySelector(sel);
+  const $$ = (sel, parent = document) => [...parent.querySelectorAll(sel)];
+  
+  const getTextNode = (el) => {
+    if (!el) return null;
+    for (const node of el.childNodes) {
+      if (node.nodeType === 3 && node.textContent.trim()) {
+        return node;
+      }
+    }
+    return null;
+  };
+  
+  const findFieldByHeading = (heading) => {
+    const titles = $$(state.selectors.formTitle);
+    for (const title of titles) {
+      if (title.textContent.trim() === heading) {
+        const field = title.nextElementSibling;
+        if (field && field.classList.contains(state.selectors.formField.replace('.', ''))) {
+          return field;
+        }
+      }
+    }
+    return null;
+  };
+  
+  const findFirstNameField = () => {
+    const blocks = $$(state.selectors.blockFirst);
+    for (const block of blocks) {
+      const label = $(state.selectors.labelFirst, block);
+      if (label && label.textContent.trim() === '名') {
+        return $(state.selectors.fieldFirst, block);
+      }
+    }
+    return null;
+  };
+  
+  const findNameNode = (container, title) => {
+    const children = [...container.childNodes];
+    for (let i = 0; i < children.length; i++) {
+      const node = children[i];
+      if (node.nodeType === 1 && 
+          node.classList.contains('my-ticket-info__name-title') &&
+          node.textContent.trim() === title) {
+        const next = children[i + 1];
+        if (next && next.nodeType === 3) {
+          return next;
+        }
+      }
+    }
+    return null;
+  };
+  
+  const splitName = (full) => {
+    if (!full || typeof full !== 'string') return ['', ''];
+    const trimmed = full.trim();
+    if (!trimmed) return ['', ''];
+    const parts = trimmed.split(/[\s\u3000\t\n\r]+/);
+    if (parts.length === 1) return [parts[0], ''];
+    return [parts[0], parts.slice(1).join(' ')];
+  };
+  
+  // ==================== CSS Injection ====================
+  
+  const css = {
+    text: `
+      ${state.selectors.header}, ${state.selectors.title}, ${state.selectors.ticket}, ${state.selectors.data} {
+        transition: opacity 0.25s ease !important;
+      }
+      ${state.selectors.header}:not([data-lp-ok]), ${state.selectors.title}:not([data-lp-ok]), ${state.selectors.ticket}:not([data-lp-ok]), ${state.selectors.data}:not([data-lp-ok]) {
+        opacity: 0 !important;
+        visibility: hidden !important;
+      }
+      ${state.selectors.header}[data-lp-ok="1"], ${state.selectors.title}[data-lp-ok="1"], ${state.selectors.ticket}[data-lp-ok="1"], ${state.selectors.data}[data-lp-ok="1"] {
+        opacity: 1 !important;
+        visibility: visible !important;
+      }
+    `,
+    
+    inject: () => {
+      const id = 'lp-style-' + Date.now();
+      const existing = $(`style[data-lp-id]`);
+      if (existing) existing.remove();
+      
+      const style = document.createElement('style');
+      style.setAttribute('data-lp-id', id);
+      style.textContent = css.text;
+      
+      if (document.documentElement) {
+        document.documentElement.insertBefore(style, document.documentElement.firstChild);
+        return true;
+      }
+      return false;
+    },
+    
+    ensure: () => {
+      if (css.inject()) return true;
+      let tries = 0;
+      const retry = () => {
+        if (css.inject()) return;
+        if (tries++ < 60) requestAnimationFrame(retry);
+      };
+      requestAnimationFrame(retry);
+      return false;
+    }
+  };
+  
+  // ==================== Page Visibility ====================
+  
+  const page = {
+    hide: () => {
+      if (document.documentElement) {
+        document.documentElement.style.cssText += ';visibility:hidden!important;';
+      }
+    },
+    
+    show: () => {
+      if (document.documentElement) {
+        document.documentElement.style.removeProperty('visibility');
+      }
+      state.revealed = true;
+    },
+    
+    autoShow: () => {
+      if (state.revealed) return;
+      setTimeout(() => page.show(), CONFIG.revealTimeout);
+      if (!document.documentElement) {
+        let t = 0;
+        const check = () => {
+          page.hide();
+          if (document.documentElement) return;
+          if (t++ < 60) requestAnimationFrame(check);
+        };
+        requestAnimationFrame(check);
+      }
+    }
+  };
+  
+  // ==================== Data Extraction ====================
+  
+  const extract = {
+    fromPage: () => {
+      const result = {};
+      try {
+        if (state.page === 'view') {
+          $$(state.selectors.block).forEach(block => {
+            const h = $('h3.account-table__title', block);
+            const d = $(state.selectors.data, block);
+            if (!h || !d) return;
+            const label = h.textContent.trim();
+            if (!FIELD_KEYS.map(k => FIELDS[k]).includes(label)) return;
+            result[label] = d.hasAttribute('data-lp-orig') 
+              ? d.getAttribute('data-lp-orig') 
+              : d.textContent.trim();
+          });
+        } else if (state.page === 'edit') {
+          const input = $(state.selectors.inputLast);
+          if (input) {
+            result[FIELDS.name] = input.hasAttribute('data-lp-orig') 
+              ? input.getAttribute('data-lp-orig') 
+              : input.value.trim();
+          }
+          
+          [FIELDS.gender, FIELDS.birth].forEach(label => {
+            const field = findFieldByHeading(label);
+            if (!field) return;
+            const tn = getTextNode(field);
+            if (tn) {
+              result[label] = field.hasAttribute('data-lp-orig') 
+                ? field.getAttribute('data-lp-orig') 
+                : tn.textContent.trim();
+            }
+          });
+        }
+        
+        // Try ticket info
+        if (!result[FIELDS.name]) {
+          const ticket = $(state.selectors.ticket);
+          if (ticket) {
+            const node = findNameNode(ticket, '氏');
+            if (node) {
+              result[FIELDS.name] = ticket.hasAttribute('data-lp-orig') 
+                ? ticket.getAttribute('data-lp-orig') 
+                : node.textContent.trim();
+            }
+          }
+        }
+        
+        // Try header mirror
+        if (!result[FIELDS.name]) {
+          const mirror = extract.fromMirror();
+          if (mirror) result[FIELDS.name] = mirror;
+        }
+      } catch(e) {
+        console.error('[LP Switcher] Extract error:', e);
+      }
+      return result;
+    },
+    
+    fromMirror: () => {
+      const sel = [state.selectors.header, state.selectors.title];
+      for (const s of sel) {
+        const el = $(s);
+        if (el) {
+          return el.hasAttribute('data-lp-orig') 
+            ? el.getAttribute('data-lp-orig') 
+            : el.textContent.trim();
+        }
+      }
+      return null;
+    }
+  };
+  
+  // ==================== Apply / Reset ====================
+  
+  const apply = {
+    toMirror: (data) => {
+      const mirrors = [state.selectors.header, state.selectors.title];
+      mirrors.forEach(sel => {
+        $$(sel).forEach(el => {
+          if (el.hasAttribute('data-lp-ok')) return;
+          if (!el.hasAttribute('data-lp-orig')) {
+            el.setAttribute('data-lp-orig', el.textContent.trim());
+          }
+          const val = data[FIELDS.name];
+          if (val && val.trim()) el.textContent = val;
+          el.setAttribute('data-lp-ok', '1');
+        });
+      });
+    },
+    
+    toAll: () => {
+      const data = getAllData();
+      
+      if (state.page === 'view') {
+        $$(state.selectors.block).forEach(block => {
+          const h = $('h3.account-table__title', block);
+          const d = $(state.selectors.data, block);
+          if (!h || !d) return;
+          const label = h.textContent.trim();
+          if (!FIELD_KEYS.map(k => FIELDS[k]).includes(label)) {
+            if (!d.hasAttribute('data-lp-ok')) d.setAttribute('data-lp-ok', '1');
+            return;
+          }
+          if (d.hasAttribute('data-lp-ok')) return;
+          if (!d.hasAttribute('data-lp-orig')) {
+            d.setAttribute('data-lp-orig', d.textContent.trim());
+          }
+          const val = label === FIELDS.gender ? 'Not Selected' : data[label];
+          if (val && val.trim()) d.textContent = val;
+          d.setAttribute('data-lp-ok', '1');
+        });
+        $$('${state.selectors.data}:not([data-lp-ok])').forEach(el => el.setAttribute('data-lp-ok', '1'));
+        
+      } else if (state.page === 'edit') {
+        apply.protectForm();
+        
+        const input = $(state.selectors.inputLast);
+        if (input && !input.hasAttribute('data-lp-ok')) {
+          if (!input.hasAttribute('data-lp-orig')) {
+            input.setAttribute('data-lp-orig', input.value.trim());
+          }
+          const val = data[FIELDS.name];
+          if (val && val.trim()) {
+            const [last, first] = splitName(val);
+            input.value = last;
+            const firstField = findFirstNameField();
+            if (firstField) {
+              if (!firstField.hasAttribute('data-lp-orig')) {
+                firstField.setAttribute('data-lp-orig', firstField.textContent.trim());
+              }
+              if (first) firstField.textContent = first;
+              firstField.setAttribute('data-lp-ok', '1');
+            }
+          }
+          input.setAttribute('data-lp-ok', '1');
+        }
+        
+        [FIELDS.gender, FIELDS.birth].forEach(label => {
+          const field = findFieldByHeading(label);
+          if (!field || field.hasAttribute('data-lp-ok')) return;
+          const tn = getTextNode(field);
+          if (!tn) return;
+          if (!field.hasAttribute('data-lp-orig')) {
+            field.setAttribute('data-lp-orig', tn.textContent.trim());
+          }
+          const val = label === FIELDS.gender ? 'Not Selected' : data[label];
+          if (val && val.trim()) tn.textContent = val;
+          field.setAttribute('data-lp-ok', '1');
+        });
+      }
+      
+      // Ticket info
+      $$(state.selectors.ticket).forEach(container => {
+        if (container.hasAttribute('data-lp-ok')) return;
+        const shi = findNameNode(container, '氏');
+        const mei = findNameNode(container, '名');
+        if (!shi) return;
+        
+        if (!container.hasAttribute('data-lp-orig')) {
+          const origShi = shi.textContent.trim();
+          const origMei = mei ? mei.textContent.trim() : '';
+          container.setAttribute('data-lp-orig', origShi + '\u0000' + origMei);
+        }
+        
+        const val = data[FIELDS.name];
+        if (val && val.trim()) {
+          const [last, first] = splitName(val);
+          shi.textContent = last;
+          if (mei && first) mei.textContent = first;
+        }
+        container.setAttribute('data-lp-ok', '1');
+      });
+      
+      apply.toMirror(data);
+    },
+    
+    protectForm: () => {
+      if (state.page !== 'edit') return;
+      const input = $(state.selectors.inputLast);
+      const form = input && input.closest('form');
+      if (form && !form.hasAttribute('data-lp-guard')) {
+        form.setAttribute('data-lp-guard', '1');
+        form.addEventListener('submit', () => {
+          if (input.hasAttribute('data-lp-orig')) {
+            input.value = input.getAttribute('data-lp-orig');
+          }
+        }, true);
+      }
+    },
+    
+    markOnly: () => {
+      try {
+        if (state.page === 'view') {
+          $$(state.selectors.data).forEach(el => {
+            if (!el.hasAttribute('data-lp-ok')) el.setAttribute('data-lp-ok', '1');
+          });
+        } else if (state.page === 'edit') {
+          const input = $(state.selectors.inputLast);
+          if (input && !input.hasAttribute('data-lp-ok')) {
+            input.setAttribute('data-lp-ok', '1');
+          }
+          const first = findFirstNameField();
+          if (first && !first.hasAttribute('data-lp-ok')) {
+            first.setAttribute('data-lp-ok', '1');
+          }
+          [FIELDS.gender, FIELDS.birth].forEach(label => {
+            const field = findFieldByHeading(label);
+            if (field && !field.hasAttribute('data-lp-ok')) {
+              field.setAttribute('data-lp-ok', '1');
+            }
+          });
+        }
+        
+        $$(state.selectors.ticket).forEach(el => {
+          if (!el.hasAttribute('data-lp-ok')) el.setAttribute('data-lp-ok', '1');
+        });
+        
+        $$([state.selectors.header, state.selectors.title].join(',')).forEach(el => {
+          if (!el.hasAttribute('data-lp-ok')) el.setAttribute('data-lp-ok', '1');
+        });
+      } catch(e) {
+        console.error('[LP Switcher] Mark error:', e);
+      }
+    },
+    
+    reset: () => {
+      try {
+        const restore = (el, attr = 'data-lp-orig') => {
+          if (el.hasAttribute(attr)) {
+            if (el.tagName === 'INPUT') {
+              el.value = el.getAttribute(attr);
+            } else {
+              el.textContent = el.getAttribute(attr);
+            }
+          }
+          el.removeAttribute('data-lp-ok');
+        };
+        
+        if (state.page === 'view') {
+          $$(state.selectors.data + '[data-lp-ok]').forEach(el => restore(el));
+        } else if (state.page === 'edit') {
+          const input = $(state.selectors.inputLast);
+          if (input) restore(input);
+          
+          const first = findFirstNameField();
+          if (first) restore(first);
+          
+          [FIELDS.gender, FIELDS.birth].forEach(label => {
+            const field = findFieldByHeading(label);
+            if (field) restore(field);
+          });
+        }
+        
+        $$(state.selectors.ticket + '[data-lp-ok]').forEach(container => {
+          if (!container.hasAttribute('data-lp-ok')) return;
+          const parts = (container.getAttribute('data-lp-orig') || '').split('\u0000');
+          const shi = findNameNode(container, '氏');
+          const mei = findNameNode(container, '名');
+          if (shi) shi.textContent = parts[0] || '';
+          if (mei && parts[1]) mei.textContent = parts[1];
+          container.removeAttribute('data-lp-ok');
+        });
+        
+        // Restore mirrors
+        [state.selectors.header, state.selectors.title].forEach(sel => {
+          $$(sel + '[data-lp-ok]').forEach(el => restore(el));
+        });
+        
+        // Re-apply
+        if (isEnabled()) apply.toAll();
+      } catch(e) {
+        console.error('[LP Switcher] Reset error:', e);
+      }
+    }
+  };
+  
+  // ==================== UI Panel ====================
+  
+  const UI = {
+    create: () => {
+      const existing = $('#lp-panel-v2');
+      if (existing) existing.remove();
+      
+      const data = getAllData();
+      const on = isEnabled();
+      const sel = getSelectors();
+      
+      const panel = document.createElement('div');
+      panel.id = 'lp-panel-v2';
+      panel.innerHTML = `
+        <div class="lp-backdrop"></div>
+        <div class="lp-modal">
+          <div class="lp-header">
+            <span class="lp-icon">⚙️</span>
+            <span class="lp-title">Display Switcher</span>
+            <span class="lp-version">v${CONFIG.version}</span>
+          </div>
+          
+          <div class="lp-status ${on ? 'lp-on' : 'lp-off'}">
+            ${on ? '✅ Active' : '⏸ Inactive'}
+          </div>
+          
+          <div class="lp-fields">
+            ${FIELD_KEYS.filter(k => k !== 'gender').map(k => `
+              <div class="lp-field">
+                <label class="lp-label">${FIELDS[k]}</label>
+                <input class="lp-input" data-field="${FIELDS[k]}" value="${escapeHtmlString(data[FIELDS[k]] || '')}" placeholder="Leave empty to keep original">
+              </div>
+            `).join('')}
+          </div>
+          
+          <div class="lp-actions">
+            <button class="lp-btn lp-btn-save">💾 Save</button>
+            <button class="lp-btn lp-btn-refresh">🔄 Refresh</button>
+            <button class="lp-btn lp-btn-export">📤 Export</button>
+            <button class="lp-btn lp-btn-import">📥 Import</button>
+            <button class="lp-btn lp-btn-toggle">${on ? '⏸ Disable' : '✅ Enable'}</button>
+            <button class="lp-btn lp-btn-close">✖ Close</button>
+          </div>
+          
+          <details class="lp-advanced">
+            <summary>Advanced: Custom Selectors</summary>
+            <div class="lp-selector-editor">
+              ${Object.entries(DEFAULT_SELECTORS).map(([key, val]) => `
+                <div class="lp-selector-row">
+                  <label class="lp-selector-label">${key}</label>
+                  <input class="lp-selector-input" data-key="${key}" value="${escapeHtmlString(sel[key] || val)}">
+                </div>
+              `).join('')}
+              <div class="lp-selector-actions">
+                <button class="lp-btn lp-btn-small lp-btn-save-sel">Save Selectors</button>
+                <button class="lp-btn lp-btn-small lp-btn-reset-sel">Reset to Default</button>
+              </div>
+            </div>
+          </details>
+        </div>
+      `;
+      
+      // Add styles
+      const style = document.createElement('style');
+      style.textContent = `
+        .lp-backdrop {
+          position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+          z-index: 999998; backdrop-filter: blur(2px);
+        }
+        .lp-modal {
+          position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          border-radius: 16px; padding: 24px; width: 380px; max-height: 90vh; overflow-y: auto;
+          z-index: 999999; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+          font-family: 'Segoe UI', system-ui, sans-serif; color: white;
+        }
+        .lp-header { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+        .lp-icon { font-size: 24px; }
+        .lp-title { font-size: 18px; font-weight: 700; flex: 1; }
+        .lp-version { font-size: 10px; opacity: 0.7; }
+        .lp-status {
+          text-align: center; padding: 8px; border-radius: 8px; margin-bottom: 16px;
+          font-weight: 600; font-size: 12px;
+        }
+        .lp-on { background: rgba(76,175,80,0.3); }
+        .lp-off { background: rgba(158,158,158,0.3); }
+        .lp-fields { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
+        .lp-field { display: flex; align-items: center; gap: 8px; }
+        .lp-label { width: 70px; font-size: 12px; font-weight: 600; }
+        .lp-input {
+          flex: 1; padding: 8px 12px; border: none; border-radius: 8px;
+          background: rgba(255,255,255,0.9); font-size: 12px; color: #333;
+        }
+        .lp-input:focus { outline: 2px solid #667eea; background: white; }
+        .lp-actions {
+          display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+          padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.2);
+        }
+        .lp-btn {
+          padding: 8px 14px; border: none; border-radius: 8px;
+          background: rgba(255,255,255,0.9); color: #333; font-size: 11px;
+          font-weight: 600; cursor: pointer; transition: all 0.2s;
+        }
+        .lp-btn:hover { background: white; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+        .lp-btn-save { background: #4caf50; color: white; }
+        .lp-btn-toggle { background: ${on ? '#ff5722' : '#4caf50'}; color: white; }
+        .lp-advanced { margin-top: 12px; font-size: 11px; }
+        .lp-advanced summary { cursor: pointer; color: rgba(255,255,255,0.8); margin-bottom: 8px; }
+        .lp-selector-editor { background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; }
+        .lp-selector-row { margin-bottom: 8px; }
+        .lp-selector-label { display: block; font-size: 10px; opacity: 0.7; margin-bottom: 2px; }
+        .lp-selector-input {
+          width: 100%; padding: 4px 8px; border: 1px solid rgba(255,255,255,0.3);
+          border-radius: 4px; background: rgba(255,255,255,0.1); color: white; font-size: 10px;
+          box-sizing: border-box;
+        }
+        .lp-selector-input:focus { outline: none; border-color: white; background: rgba(255,255,255,0.2); }
+        .lp-btn-small { padding: 6px 10px; font-size: 10px; }
+        .lp-btn-save-sel { background: #4caf50; color: white; }
+        .lp-btn-reset-sel { background: #f44336; color: white; }
+      `;
+      panel.appendChild(style);
+      document.body.appendChild(panel);
+      
+      // Event handlers
+      $('.lp-backdrop', panel).addEventListener('click', () => panel.remove());
+      $('.lp-btn-close', panel).addEventListener('click', () => panel.remove());
+      
+      $('.lp-btn-save', panel).addEventListener('click', () => {
+        const newData = {};
+        $$('.lp-input', panel).forEach(input => {
+          newData[input.dataset.field] = input.value.trim();
+        });
+        saveAllData(newData);
+        setEnabled(true);
+        apply.reset();
+        panel.remove();
+        notify('✅ Saved!');
+      });
+      
+      $('.lp-btn-refresh', panel).addEventListener('click', () => {
+        if (!confirm('Re-fetch data from page?')) return;
+        apply.reset();
+        const pageData = extract.fromPage();
+        saveAllData(Object.keys(pageData).length > 0 ? pageData : { ...DEFAULT_DATA });
+        panel.remove();
+        UI.create();
+        notify('🔄 Refreshed!');
+      });
+      
+      $('.lp-btn-export', panel).addEventListener('click', () => {
+        const exportData = {
+          version: CONFIG.version,
+          timestamp: Date.now(),
+          data: getAllData(),
+          selectors: getSelectors()
+        };
+        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `lp-switcher-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        notify('📤 Exported!');
+      });
+      
+      $('.lp-btn-import', panel).addEventListener('click', () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+        input.onchange = (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            try {
+              const imported = JSON.parse(ev.target.result);
+              if (imported.data) saveAllData(imported.data);
+              if (imported.selectors) saveSelectors(imported.selectors);
+              apply.reset();
+              panel.remove();
+              UI.create();
+              notify('📥 Imported!');
+            } catch(err) {
+              alert('❌ Import failed: ' + err.message);
+            }
+          };
+          reader.readAsText(file);
+        };
+        input.click();
+      });
+      
+      $('.lp-btn-toggle', panel).addEventListener('click', () => {
+        if (!confirm('Toggle switcher?')) return;
+        setEnabled(!on);
+        apply.reset();
+        panel.remove();
+        notify(on ? '⏸ Disabled!' : '✅ Enabled!');
+      });
+      
+      $('.lp-btn-save-sel', panel).addEventListener('click', () => {
+        const newSel = { ...state.selectors };
+        $$('.lp-selector-input', panel).forEach(input => {
+          newSel[input.dataset.key] = input.value.trim();
+        });
+        if (saveSelectors(newSel)) {
+          css.ensure();
+          notify('✅ Selectors saved!');
+        }
+      });
+      
+      $('.lp-btn-reset-sel', panel).addEventListener('click', () => {
+        if (!confirm('Reset selectors to default?')) return;
+        storage.remove('selectors');
+        state.selectors = { ...DEFAULT_SELECTORS };
+        css.ensure();
+        panel.remove();
+        UI.create();
+        notify('🔄 Selectors reset!');
+      });
+    }
+  };
+  
+  // ==================== Notification ====================
+  
+  const notify = (msg) => {
+    const n = document.createElement('div');
+    n.textContent = msg;
+    n.style.cssText = `
+      position: fixed; top: 20px; right: 20px; z-index: 1000001;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white; padding: 14px 20px; border-radius: 10px;
+      font-size: 13px; font-weight: 600; box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+      animation: lp-notify-in 0.3s ease;
+    `;
+    document.body.appendChild(n);
+    setTimeout(() => {
+      n.style.animation = 'lp-notify-out 0.3s ease';
+      setTimeout(() => n.remove(), 300);
+    }, 2200);
+    
+    // Add animation
+    if (!document.getElementById('lp-keyframes')) {
+      const kf = document.createElement('style');
+      kf.id = 'lp-keyframes';
+      kf.textContent = `
+        @keyframes lp-notify-in { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes lp-notify-out { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(20px); } }
+      `;
+      document.head.appendChild(kf);
+    }
+  };
+  
+  // ==================== Double-click Handler ====================
+  
+  const setupDblClick = () => {
+    const h1 = $('h1.heading01');
+    if (h1 && !h1.hasAttribute('data-lp-dbl')) {
+      h1.style.cursor = 'pointer';
+      h1.title = 'Double-click to open Display Switcher';
+      h1.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        UI.create();
+      });
+      h1.setAttribute('data-lp-dbl', '1');
+    }
+  };
+  
+  // ==================== Observer ====================
+  
+  const startObserver = () => {
+    if (state.observerActive) return;
+    state.observerActive = true;
+    
+    let timer = null;
+    const observer = new MutationObserver(() => {
+      if (timer) cancelAnimationFrame(timer);
+      timer = requestAnimationFrame(() => {
+        if (isEnabled()) {
+          apply.toAll();
+        } else {
+          apply.markOnly();
+        }
+        setupDblClick();
+        timer = null;
+      });
+    });
+    
+    observer.observe(document.documentElement || document, {
+      childList: true,
+      subtree: true
+    });
+  };
+  
+  // ==================== Init ====================
+  
+  const detectPage = () => {
+    if ($(state.selectors.block)) return 'view';
+    if ($(state.selectors.inputLast)) return 'edit';
+    return null;
+  };
+  
+  const init = () => {
+    state.selectors = getSelectors();
+    css.ensure();
+    
+    if (state.initialized) {
+      if (isEnabled()) {
+        apply.toAll();
+      }
+      return;
+    }
+    
+    const pageType = detectPage();
+    const hasMirror = $(state.selectors.header) || $$(state.selectors.ticket).length > 0;
+    
+    if (!pageType && !hasMirror) {
+      state.retryCount++;
+      if (state.retryCount > CONFIG.retryLimit) {
+        page.show();
+        return;
+      }
+      requestAnimationFrame(init);
+      return;
+    }
+    
+    state.page = pageType;
+    apply.protectForm();
+    state.initialized = true;
+    
+    // Check expiration
+    if (isDataExpired()) {
+      console.info('[LP Switcher] Data expired, re-fetching...');
+      const pageData = extract.fromPage();
+      saveAllData(Object.keys(pageData).length > 0 ? pageData : { ...DEFAULT_DATA });
+    }
+    
+    // First run: extract from page
+    if (!storage.get('data')) {
+      const pageData = extract.fromPage();
+      saveAllData(Object.keys(pageData).length > 0 ? pageData : { ...DEFAULT_DATA });
+      apply.markOnly();
+    } else if (isEnabled()) {
+      apply.toAll();
+    } else {
+      apply.markOnly();
+    }
+    
+    setupDblClick();
+    startObserver();
+    page.show();
+    
+    // Tampermonkey menu
+    if (typeof GM_registerMenuCommand !== 'undefined') {
+      GM_registerMenuCommand('⚙️ Open Switcher', UI.create);
+      GM_registerMenuCommand('🔄 Re-apply', () => apply.reset());
+      GM_registerMenuCommand('📤 Export', () => $('#lp-panel-v2')?.querySelector('.lp-btn-export')?.click());
+      GM_registerMenuCommand('📥 Import', () => $('#lp-panel-v2')?.querySelector('.lp-btn-import')?.click());
+    }
+  };
+  
+  // ==================== Main ====================
+  
+  page.autoShow();
+  state.selectors = getSelectors();
+  
+  const check = () => {
+    const pageType = detectPage();
+    const hasMirror = $(state.selectors.header) || $$(state.selectors.ticket).length > 0;
+    
+    if (!pageType && !hasMirror) {
+      if (!state.initialized) {
+        state.retryCount++;
+        if (state.retryCount > CONFIG.retryLimit) {
+          page.show();
+          return;
+        }
+        requestAnimationFrame(check);
+      }
+      return;
+    }
+    
+    init();
+  };
+  
+  check();
+  
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', check);
+  }
+  
+  const loop = () => {
+    if (!state.initialized) {
+      check();
+      requestAnimationFrame(loop);
+    }
+  };
+  
+  if (!state.initialized) {
+    requestAnimationFrame(loop);
+  }
+  
+})();
