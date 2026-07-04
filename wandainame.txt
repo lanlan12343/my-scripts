@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         万代姓名修改
 // @namespace    lanlan
-// @version      4.3
+// @version      4.4
 // @description  lanlan
 // @match        *://*/*
 // @grant        none
@@ -49,6 +49,103 @@
     function getKatakanaName() {
         if (myCustomKana) return myCustomKana;
         return convertRomajiToKatakana(myCustomName);
+    }
+
+    // === 创建输入面板 ===
+    function createInputPanel() {
+        // 移除已存在的面板
+        const existing = document.getElementById('wandai-input-panel');
+        if (existing) existing.remove();
+
+        const panel = document.createElement('div');
+        panel.id = 'wandai-input-panel';
+        panel.innerHTML = `
+            <div style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:999998" id="wandai-overlay"></div>
+            <div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:12px;padding:24px;width:360px;z-index:999999;box-shadow:0 10px 40px rgba(0,0,0,0.3);font-family:sans-serif">
+                <h3 style="margin:0 0 20px;text-align:center;font-size:16px;color:#333">修改个人信息</h3>
+                
+                <div style="margin-bottom:14px">
+                    <label style="display:block;font-size:12px;color:#666;margin-bottom:6px">英文名</label>
+                    <input type="text" id="wandai-name" value="${escapeHtml(myCustomName)}" placeholder="如：DONG MENGYUAN" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box">
+                </div>
+                
+                <div style="margin-bottom:14px">
+                    <label style="display:block;font-size:12px;color:#666;margin-bottom:6px">假名</label>
+                    <input type="text" id="wandai-kana" value="${escapeHtml(myCustomKana)}" placeholder="如：ドン メンユアン" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box">
+                </div>
+                
+                <div style="margin-bottom:14px">
+                    <label style="display:block;font-size:12px;color:#666;margin-bottom:6px">生年月日</label>
+                    <input type="text" id="wandai-birth" value="${escapeHtml(myCustomBirth)}" placeholder="如：1990/01/01" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box">
+                </div>
+                
+                <div style="margin-bottom:20px">
+                    <label style="display:block;font-size:12px;color:#666;margin-bottom:6px">性别</label>
+                    <input type="text" id="wandai-gender" value="${escapeHtml(myCustomGender)}" placeholder="如：男性" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box">
+                </div>
+                
+                <div style="display:flex;gap:10px;justify-content:center">
+                    <button id="wandai-save" style="padding:10px 24px;background:#4caf50;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px">保存</button>
+                    <button id="wandai-cancel" style="padding:10px 24px;background:#999;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px">取消</button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(panel);
+
+        // 事件绑定
+        document.getElementById('wandai-overlay').addEventListener('click', () => panel.remove());
+        document.getElementById('wandai-cancel').addEventListener('click', () => panel.remove());
+        document.getElementById('wandai-save').addEventListener('click', () => {
+            const name = document.getElementById('wandai-name').value.trim();
+            const kana = document.getElementById('wandai-kana').value.trim();
+            const birth = document.getElementById('wandai-birth').value.trim();
+            const gender = document.getElementById('wandai-gender').value.trim();
+
+            if (name) {
+                myCustomName = name;
+                localStorage.setItem('STAY_CUSTOM_VISUAL_NAME', myCustomName);
+                // 自动转换假名（如果假名为空）
+                if (!kana && !myCustomKana) {
+                    myCustomKana = convertRomajiToKatakana(myCustomName);
+                    localStorage.setItem('STAY_CUSTOM_VISUAL_KANA', myCustomKana);
+                }
+            }
+
+            if (kana) {
+                myCustomKana = kana;
+                localStorage.setItem('STAY_CUSTOM_VISUAL_KANA', myCustomKana);
+            } else if (!name) {
+                // 如果没填英文名且清空了假名
+                myCustomKana = '';
+                localStorage.removeItem('STAY_CUSTOM_VISUAL_KANA');
+            }
+
+            if (birth) {
+                myCustomBirth = birth;
+                localStorage.setItem('STAY_CUSTOM_VISUAL_BIRTH', myCustomBirth);
+            } else {
+                myCustomBirth = '';
+                localStorage.removeItem('STAY_CUSTOM_VISUAL_BIRTH');
+            }
+
+            if (gender) {
+                myCustomGender = gender;
+                localStorage.setItem('STAY_CUSTOM_VISUAL_GENDER', myCustomGender);
+            } else {
+                myCustomGender = '';
+                localStorage.removeItem('STAY_CUSTOM_VISUAL_GENDER');
+            }
+
+            cleanWebPageVisuals();
+            panel.remove();
+        });
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     // === 核心清洗函数 ===
@@ -126,77 +223,8 @@
         const text = event.target.textContent;
 
         if (text.includes('会員情報') || text.includes('会员') || text.includes('チケット') || text.includes('券')) {
-            // 构建默认提示文字
-            const defaultValue = [
-                myCustomName ? '英文名: ' + myCustomName : '英文名: ',
-                myCustomKana ? '假名: ' + myCustomKana : '假名: ',
-                myCustomBirth ? '生日: ' + myCustomBirth : '生日: ',
-                myCustomGender ? '性别: ' + myCustomGender : '性别: '
-            ].join('\n');
-
-            const userInput = prompt('请输入要修改的内容（不填则保持不变）：\n\n格式示例：\n英文名: DONG MENGYUAN\n假名: ドン メンユアン\n生日: 1990/01/01\n性别: 男性', defaultValue);
-
-            if (userInput === null) return;
-
-            // 解析输入
-            const lines = userInput.split('\n');
-            let changed = false;
-
-            lines.forEach(line => {
-                line = line.trim();
-                if (!line) return;
-
-                // 匹配 字段名: 值 或 字段名=值
-                const match = line.match(/^(英文名|假名|生日|性别)[：:]\s*(.*)$/);
-                if (match) {
-                    const field = match[1];
-                    const value = match[2].trim();
-
-                    if (field === '英文名') {
-                        if (value) {
-                            myCustomName = value;
-                            localStorage.setItem('STAY_CUSTOM_VISUAL_NAME', myCustomName);
-                            // 自动转换假名（如果假名为空）
-                            if (!myCustomKana) {
-                                myCustomKana = convertRomajiToKatakana(myCustomName);
-                                localStorage.setItem('STAY_CUSTOM_VISUAL_KANA', myCustomKana);
-                            }
-                            changed = true;
-                        }
-                    } else if (field === '假名') {
-                        if (value) {
-                            myCustomKana = value;
-                            localStorage.setItem('STAY_CUSTOM_VISUAL_KANA', myCustomKana);
-                        } else {
-                            myCustomKana = '';
-                            localStorage.removeItem('STAY_CUSTOM_VISUAL_KANA');
-                        }
-                        changed = true;
-                    } else if (field === '生日') {
-                        if (value) {
-                            myCustomBirth = value;
-                            localStorage.setItem('STAY_CUSTOM_VISUAL_BIRTH', myCustomBirth);
-                        } else {
-                            myCustomBirth = '';
-                            localStorage.removeItem('STAY_CUSTOM_VISUAL_BIRTH');
-                        }
-                        changed = true;
-                    } else if (field === '性别') {
-                        if (value) {
-                            myCustomGender = value;
-                            localStorage.setItem('STAY_CUSTOM_VISUAL_GENDER', myCustomGender);
-                        } else {
-                            myCustomGender = '';
-                            localStorage.removeItem('STAY_CUSTOM_VISUAL_GENDER');
-                        }
-                        changed = true;
-                    }
-                }
-            });
-
-            if (changed) {
-                cleanWebPageVisuals();
-            }
+            event.preventDefault();
+            createInputPanel();
         }
     });
 
