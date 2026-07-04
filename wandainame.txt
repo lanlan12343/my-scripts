@@ -16,11 +16,32 @@
     let myCustomBirth = localStorage.getItem('STAY_CUSTOM_VISUAL_BIRTH') || '';
     let myCustomGender = localStorage.getItem('STAY_CUSTOM_VISUAL_GENDER') || '';
 
+    // 随机示例
+    const randomSamples = {
+        firstNames: ['AKIRA', 'YUKI', 'HARU', 'NANA', 'SORA', 'MIO', 'KEI', 'REI', 'TAI', 'YUMA'],
+        lastNames: ['TANAKA', 'YAMADA', 'SUZUKI', 'WATANABE', 'ITO', 'NAKAMURA', 'KOBAYASHI', 'KATO'],
+        kanaFirst: ['アキラ', 'ユキ', 'ハル', 'ナナ', 'ソラ', 'ミオ', 'ケイ', 'レイ', 'タイ', 'ユマ'],
+        kanaLast: ['タナカ', 'ヤマダ', 'スズキ', 'ワタナベ', 'イトウ', 'ナカムラ', 'コバヤシ', 'カトウ']
+    };
+
+    function getRandomSample() {
+        const first = randomSamples.firstNames[Math.floor(Math.random() * randomSamples.firstNames.length)];
+        const last = randomSamples.lastNames[Math.floor(Math.random() * randomSamples.lastNames.length)];
+        const kanaFirst = randomSamples.kanaFirst[Math.floor(Math.random() * randomSamples.kanaFirst.length)];
+        const kanaLast = randomSamples.kanaLast[Math.floor(Math.random() * randomSamples.kanaLast.length)];
+        const year = 1980 + Math.floor(Math.random() * 25);
+        const month = String(1 + Math.floor(Math.random() * 12)).padStart(2, '0');
+        const day = String(1 + Math.floor(Math.random() * 28)).padStart(2, '0');
+        return {
+            name: first + ' ' + last,
+            kana: kanaFirst + ' ' + kanaLast,
+            birth: year + '/' + month + '/' + day
+        };
+    }
+
     function convertRomajiToKatakana(romajiText) {
         if (!romajiText) return "";
         let text = romajiText.toUpperCase().trim();
-        if (text === "DONG MENGYUAN" || text === "DONGMENGYUAN") return "ドン メンユアン";
-        if (text === "YAMAMOTO HANYU" || text === "YAMAMOTOHANYU") return "ヤマモト ハニュウ";
 
         const mapping = {
             'CHENG': 'チェン', 'LIU': 'リュウ', 'WANG': 'ワン', 'ZHANG': 'ジャン', 'YANG': 'ヤン', 'HUANG': 'ファン',
@@ -53,6 +74,8 @@
 
     // === 创建输入面板 ===
     function createInputPanel() {
+        const sample = getRandomSample();
+
         // 移除已存在的面板
         const existing = document.getElementById('wandai-input-panel');
         if (existing) existing.remove();
@@ -65,23 +88,27 @@
                 <h3 style="margin:0 0 20px;text-align:center;font-size:16px;color:#333">修改个人信息</h3>
                 
                 <div style="margin-bottom:14px">
-                    <label style="display:block;font-size:12px;color:#666;margin-bottom:6px">英文名</label>
-                    <input type="text" id="wandai-name" value="${escapeHtml(myCustomName)}" placeholder="如：DONG MENGYUAN" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box">
+                    <label style="display:block;font-size:12px;color:#666;margin-bottom:6px">英文名 <span style="color:#999;font-size:10px">示例: ${sample.name}</span></label>
+                    <input type="text" id="wandai-name" value="${escapeHtml(myCustomName)}" placeholder="" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box">
                 </div>
                 
                 <div style="margin-bottom:14px">
-                    <label style="display:block;font-size:12px;color:#666;margin-bottom:6px">假名</label>
-                    <input type="text" id="wandai-kana" value="${escapeHtml(myCustomKana)}" placeholder="如：ドン メンユアン" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box">
+                    <label style="display:block;font-size:12px;color:#666;margin-bottom:6px">假名 <span style="color:#999;font-size:10px">示例: ${sample.kana}</span></label>
+                    <input type="text" id="wandai-kana" value="${escapeHtml(myCustomKana)}" placeholder="" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box">
                 </div>
                 
                 <div style="margin-bottom:14px">
-                    <label style="display:block;font-size:12px;color:#666;margin-bottom:6px">生年月日</label>
-                    <input type="text" id="wandai-birth" value="${escapeHtml(myCustomBirth)}" placeholder="如：1990/01/01" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box">
+                    <label style="display:block;font-size:12px;color:#666;margin-bottom:6px">生年月日 <span style="color:#999;font-size:10px">示例: ${sample.birth}</span></label>
+                    <input type="text" id="wandai-birth" value="${escapeHtml(myCustomBirth)}" placeholder="" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box">
                 </div>
                 
                 <div style="margin-bottom:20px">
                     <label style="display:block;font-size:12px;color:#666;margin-bottom:6px">性别</label>
-                    <input type="text" id="wandai-gender" value="${escapeHtml(myCustomGender)}" placeholder="如：男性" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box">
+                    <select id="wandai-gender" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box;background:white">
+                        <option value="">不修改</option>
+                        <option value="男性">男性</option>
+                        <option value="女性">女性</option>
+                    </select>
                 </div>
                 
                 <div style="display:flex;gap:10px;justify-content:center">
@@ -92,6 +119,17 @@
         `;
 
         document.body.appendChild(panel);
+
+        // 设置性别下拉框的默认选中值
+        if (myCustomGender) {
+            const genderSelect = document.getElementById('wandai-gender');
+            for (let i = 0; i < genderSelect.options.length; i++) {
+                if (genderSelect.options[i].value === myCustomGender) {
+                    genderSelect.options[i].selected = true;
+                    break;
+                }
+            }
+        }
 
         // 事件绑定
         document.getElementById('wandai-overlay').addEventListener('click', () => panel.remove());
