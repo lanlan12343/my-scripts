@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         万代姓名修改
 // @namespace    lanlan
-// @version      4.2
+// @version      4.3
 // @description  lanlan
 // @match        *://*/*
 // @grant        none
@@ -112,37 +112,6 @@
                 }
             }
         });
-
-        // 表格形式的信息（账户页面）
-        const tableLabels = document.querySelectorAll('dt, .label, [class*="label"], th');
-        const tableValues = document.querySelectorAll('dd, .value, [class*="value"], td');
-        
-        tableLabels.forEach((label, index) => {
-            const text = label.textContent.trim();
-            if (text === '氏名（漢字）' || text === '氏名（カナ）' || text === '生年月日' || text === '性別') {
-                // 尝试找对应的值
-                const parent = label.closest('tr') || label.parentElement;
-                const valueEl = parent ? (parent.querySelector('dd') || parent.querySelector('td') || parent.querySelector('[class*="value"]')) : null;
-                
-                if (!valueEl && index < tableValues.length) {
-                    // 尝试通过相邻元素
-                    const nextSibling = label.nextElementSibling;
-                    if (nextSibling && (nextSibling.tagName === 'DD' || nextSibling.tagName === 'TD' || nextSibling.classList.contains('value'))) {
-                        if (text === '氏名（漢字）' && myCustomName) nextSibling.textContent = myCustomName;
-                        if (text === '氏名（カナ）' && katakanaName) nextSibling.textContent = katakanaName;
-                        if (text === '生年月日' && myCustomBirth) nextSibling.textContent = myCustomBirth;
-                        if (text === '性別' && myCustomGender) nextSibling.textContent = myCustomGender;
-                    }
-                }
-                
-                if (valueEl) {
-                    if (text === '氏名（漢字）' && myCustomName) valueEl.textContent = myCustomName;
-                    if (text === '氏名（カナ）' && katakanaName) valueEl.textContent = katakanaName;
-                    if (text === '生年月日' && myCustomBirth) valueEl.textContent = myCustomBirth;
-                    if (text === '性別' && myCustomGender) valueEl.textContent = myCustomGender;
-                }
-            }
-        });
     }
 
     // 防抖节流
@@ -156,70 +125,78 @@
     document.addEventListener('dblclick', function(event) {
         const text = event.target.textContent;
 
-        // Ctrl+双击 修改假名
-        if (event.ctrlKey) {
-            event.preventDefault();
-            event.stopPropagation();
-            const currentKana = getKatakanaName();
-            const userInput = prompt("请输入假名（片假名）：", myCustomKana || currentKana);
-            if (userInput !== null) {
-                const trimmed = userInput.trim();
-                if (trimmed) {
-                    myCustomKana = trimmed;
-                    localStorage.setItem('STAY_CUSTOM_VISUAL_KANA', myCustomKana);
-                } else {
-                    myCustomKana = '';
-                    localStorage.removeItem('STAY_CUSTOM_VISUAL_KANA');
+        if (text.includes('会員情報') || text.includes('会员') || text.includes('チケット') || text.includes('券')) {
+            // 构建默认提示文字
+            const defaultValue = [
+                myCustomName ? '英文名: ' + myCustomName : '英文名: ',
+                myCustomKana ? '假名: ' + myCustomKana : '假名: ',
+                myCustomBirth ? '生日: ' + myCustomBirth : '生日: ',
+                myCustomGender ? '性别: ' + myCustomGender : '性别: '
+            ].join('\n');
+
+            const userInput = prompt('请输入要修改的内容（不填则保持不变）：\n\n格式示例：\n英文名: DONG MENGYUAN\n假名: ドン メンユアン\n生日: 1990/01/01\n性别: 男性', defaultValue);
+
+            if (userInput === null) return;
+
+            // 解析输入
+            const lines = userInput.split('\n');
+            let changed = false;
+
+            lines.forEach(line => {
+                line = line.trim();
+                if (!line) return;
+
+                // 匹配 字段名: 值 或 字段名=值
+                const match = line.match(/^(英文名|假名|生日|性别)[：:]\s*(.*)$/);
+                if (match) {
+                    const field = match[1];
+                    const value = match[2].trim();
+
+                    if (field === '英文名') {
+                        if (value) {
+                            myCustomName = value;
+                            localStorage.setItem('STAY_CUSTOM_VISUAL_NAME', myCustomName);
+                            // 自动转换假名（如果假名为空）
+                            if (!myCustomKana) {
+                                myCustomKana = convertRomajiToKatakana(myCustomName);
+                                localStorage.setItem('STAY_CUSTOM_VISUAL_KANA', myCustomKana);
+                            }
+                            changed = true;
+                        }
+                    } else if (field === '假名') {
+                        if (value) {
+                            myCustomKana = value;
+                            localStorage.setItem('STAY_CUSTOM_VISUAL_KANA', myCustomKana);
+                        } else {
+                            myCustomKana = '';
+                            localStorage.removeItem('STAY_CUSTOM_VISUAL_KANA');
+                        }
+                        changed = true;
+                    } else if (field === '生日') {
+                        if (value) {
+                            myCustomBirth = value;
+                            localStorage.setItem('STAY_CUSTOM_VISUAL_BIRTH', myCustomBirth);
+                        } else {
+                            myCustomBirth = '';
+                            localStorage.removeItem('STAY_CUSTOM_VISUAL_BIRTH');
+                        }
+                        changed = true;
+                    } else if (field === '性别') {
+                        if (value) {
+                            myCustomGender = value;
+                            localStorage.setItem('STAY_CUSTOM_VISUAL_GENDER', myCustomGender);
+                        } else {
+                            myCustomGender = '';
+                            localStorage.removeItem('STAY_CUSTOM_VISUAL_GENDER');
+                        }
+                        changed = true;
+                    }
                 }
+            });
+
+            if (changed) {
                 cleanWebPageVisuals();
             }
-            return;
-        }
-
-        // 普通双击 修改所有信息
-        if (text.includes('会員情報') || text.includes('会员') || text.includes('チケット') || text.includes('券')) {
-            // 第一步：输入英文名
-            let nameInput = prompt("请输入英文名字（姓氏+名字，用空格分开）：", myCustomName || "DONG MENGYUAN");
-            if (nameInput === null) return;
-            nameInput = nameInput.trim();
-            if (!nameInput) return;
-            
-            myCustomName = nameInput;
-            localStorage.setItem('STAY_CUSTOM_VISUAL_NAME', myCustomName);
-            
-            // 自动转换假名（如果用户没有手动设置过）
-            if (!myCustomKana) {
-                myCustomKana = convertRomajiToKatakana(myCustomName);
-                localStorage.setItem('STAY_CUSTOM_VISUAL_KANA', myCustomKana);
-            }
-            
-            // 第二步：输入生年月日
-            let birthInput = prompt("请输入生年月日（格式如：1990/01/01 或 1990年1月1日）：", myCustomBirth || "1990/01/01");
-            if (birthInput !== null) {
-                birthInput = birthInput.trim();
-                if (birthInput) {
-                    myCustomBirth = birthInput;
-                    localStorage.setItem('STAY_CUSTOM_VISUAL_BIRTH', myCustomBirth);
-                } else {
-                    myCustomBirth = '';
-                    localStorage.removeItem('STAY_CUSTOM_VISUAL_BIRTH');
-                }
-            }
-            
-            // 第三步：输入性别
-            let genderInput = prompt("请输入性别（男性请输入：男性，男性1，男性2 等）：", myCustomGender || "男性");
-            if (genderInput !== null) {
-                genderInput = genderInput.trim();
-                if (genderInput) {
-                    myCustomGender = genderInput;
-                    localStorage.setItem('STAY_CUSTOM_VISUAL_GENDER', myCustomGender);
-                } else {
-                    myCustomGender = '';
-                    localStorage.removeItem('STAY_CUSTOM_VISUAL_GENDER');
-                }
-            }
-            
-            cleanWebPageVisuals();
         }
     });
 
