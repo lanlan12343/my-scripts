@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         LivePocket 姓名切换
+// @name         LivePocket 姓名修改
 // @version      2.0
-// @description   LivePocket 上自定义姓名
-// @author       andy lin
+// @description  在 LivePocket 修改姓名
+// @author       Andy lin
 // @match        https://livepocket.jp/*
 // @match        https://t.livepocket.jp/*
 // @grant        GM_getValue
@@ -126,6 +126,18 @@
       return true;
     }
     return false;
+  };
+  
+  // ==================== Utility Functions ====================
+  
+  const escapeHtmlString = (str) => {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   };
   
   // ==================== DOM Helpers ====================
@@ -416,7 +428,7 @@
           if (!field.hasAttribute('data-lp-orig')) {
             field.setAttribute('data-lp-orig', tn.textContent.trim());
           }
-          const val = label === FIELDS.gender ? 'Not Selected' : data[label];
+          const val = data[label];
           if (val && val.trim()) tn.textContent = val;
           field.setAttribute('data-lp-ok', '1');
         });
