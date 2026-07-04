@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         万代姓名修改
 // @namespace    lanlan
-// @version      4.0
+// @version      4.2
 // @description  lanlan
 // @match        *://*/*
 // @grant        none
@@ -12,6 +12,9 @@
     'use strict';
 
     let myCustomName = localStorage.getItem('STAY_CUSTOM_VISUAL_NAME') || '';
+    let myCustomKana = localStorage.getItem('STAY_CUSTOM_VISUAL_KANA') || '';
+    let myCustomBirth = localStorage.getItem('STAY_CUSTOM_VISUAL_BIRTH') || '';
+    let myCustomGender = localStorage.getItem('STAY_CUSTOM_VISUAL_GENDER') || '';
 
     function convertRomajiToKatakana(romajiText) {
         if (!romajiText) return "";
@@ -43,17 +46,22 @@
         return resultWords.filter(w => w.length > 0).join(' ');
     }
 
-    let currentKatakanaName = convertRomajiToKatakana(myCustomName);
+    function getKatakanaName() {
+        if (myCustomKana) return myCustomKana;
+        return convertRomajiToKatakana(myCustomName);
+    }
 
     // === 核心清洗函数 ===
     function cleanWebPageVisuals() {
-        if (!myCustomName) return;
+        if (!myCustomName && !myCustomBirth && !myCustomGender) return;
+
+        const katakanaName = getKatakanaName();
 
         // 适配
         const couponNameNodes = document.querySelectorAll('.block-mypage-coupon-list-item-code-value');
         couponNameNodes.forEach(node => {
-            if (node.textContent.trim() !== myCustomName && !node.textContent.includes('EC-')) {
-                node.textContent = myCustomName; // 纯视觉无痕改写为你的全新汉字名
+            if (myCustomName && node.textContent.trim() !== myCustomName && !node.textContent.includes('EC-')) {
+                node.textContent = myCustomName;
             }
         });
 
@@ -66,15 +74,15 @@
                 const lines = html.split(/<br>|<BR>/i);
                 if (lines && lines.length > 0) {
                     const firstLineText = lines[0].trim();
-                    const expectedLine = myCustomName + "(" + currentKatakanaName + ")";
-                    if (firstLineText !== myCustomName && firstLineText !== expectedLine && !html.includes('決済') && !html.includes('结算')) {
+                    const expectedLine = myCustomName + "(" + katakanaName + ")";
+                    if (myCustomName && firstLineText !== myCustomName && firstLineText !== expectedLine && !html.includes('決済') && !html.includes('结算')) {
                         lines[0] = expectedLine; 
                         content.innerHTML = lines.join('<br>');
                     }
                 }
             } else {
                 const textTrim = content.textContent.trim();
-                if (textTrim && textTrim !== myCustomName && !textTrim.includes('決済') && !textTrim.includes('结算') && textTrim.length < 30) {
+                if (myCustomName && textTrim && textTrim !== myCustomName && !textTrim.includes('決済') && !textTrim.includes('结算') && textTrim.length < 30) {
                     content.innerHTML = myCustomName;
                 }
             }
@@ -84,17 +92,54 @@
         const labels = document.querySelectorAll('.block-mypage-member-info-label');
         labels.forEach(label => {
             const labelText = label.textContent.trim();
-            if (labelText === '氏名（漢字）' || labelText === '氏名（カナ）') {
+            if (labelText === '氏名（漢字）' || labelText === '氏名（カナ）' || labelText === '生年月日' || labelText === '性別') {
                 const dlItem = label.closest('.block-mypage-member-info-item') || label.parentElement;
                 const valueNode = dlItem ? dlItem.querySelector('.block-mypage-member-info-value') : null;
 
                 if (valueNode) {
-                    if (labelText === '氏名（漢字）' && valueNode.textContent.trim() !== myCustomName) {
+                    if (labelText === '氏名（漢字）' && myCustomName && valueNode.textContent.trim() !== myCustomName) {
                         valueNode.textContent = myCustomName;
                     }
-                    if (labelText === '氏名（カナ）' && valueNode.textContent.trim() !== currentKatakanaName) {
-                        valueNode.textContent = currentKatakanaName;
+                    if (labelText === '氏名（カナ）' && katakanaName && valueNode.textContent.trim() !== katakanaName) {
+                        valueNode.textContent = katakanaName;
                     }
+                    if (labelText === '生年月日' && myCustomBirth && valueNode.textContent.trim() !== myCustomBirth) {
+                        valueNode.textContent = myCustomBirth;
+                    }
+                    if (labelText === '性別' && myCustomGender && valueNode.textContent.trim() !== myCustomGender) {
+                        valueNode.textContent = myCustomGender;
+                    }
+                }
+            }
+        });
+
+        // 表格形式的信息（账户页面）
+        const tableLabels = document.querySelectorAll('dt, .label, [class*="label"], th');
+        const tableValues = document.querySelectorAll('dd, .value, [class*="value"], td');
+        
+        tableLabels.forEach((label, index) => {
+            const text = label.textContent.trim();
+            if (text === '氏名（漢字）' || text === '氏名（カナ）' || text === '生年月日' || text === '性別') {
+                // 尝试找对应的值
+                const parent = label.closest('tr') || label.parentElement;
+                const valueEl = parent ? (parent.querySelector('dd') || parent.querySelector('td') || parent.querySelector('[class*="value"]')) : null;
+                
+                if (!valueEl && index < tableValues.length) {
+                    // 尝试通过相邻元素
+                    const nextSibling = label.nextElementSibling;
+                    if (nextSibling && (nextSibling.tagName === 'DD' || nextSibling.tagName === 'TD' || nextSibling.classList.contains('value'))) {
+                        if (text === '氏名（漢字）' && myCustomName) nextSibling.textContent = myCustomName;
+                        if (text === '氏名（カナ）' && katakanaName) nextSibling.textContent = katakanaName;
+                        if (text === '生年月日' && myCustomBirth) nextSibling.textContent = myCustomBirth;
+                        if (text === '性別' && myCustomGender) nextSibling.textContent = myCustomGender;
+                    }
+                }
+                
+                if (valueEl) {
+                    if (text === '氏名（漢字）' && myCustomName) valueEl.textContent = myCustomName;
+                    if (text === '氏名（カナ）' && katakanaName) valueEl.textContent = katakanaName;
+                    if (text === '生年月日' && myCustomBirth) valueEl.textContent = myCustomBirth;
+                    if (text === '性別' && myCustomGender) valueEl.textContent = myCustomGender;
                 }
             }
         });
@@ -107,20 +152,74 @@
         debounceTimer = setTimeout(cleanWebPageVisuals, 20);
     }
 
-    // 双击触发交互（双击会员情报或者双击页面空白处的“券”等字眼皆可触发）
+    // 双击触发交互
     document.addEventListener('dblclick', function(event) {
         const text = event.target.textContent;
-        if (text.includes('会員情報') || text.includes('会员') || text.includes('チケット') || text.includes('券')) {
-            const userInput = prompt("请输入英文名字：", myCustomName || "DONG MENGYUAN");
+
+        // Ctrl+双击 修改假名
+        if (event.ctrlKey) {
+            event.preventDefault();
+            event.stopPropagation();
+            const currentKana = getKatakanaName();
+            const userInput = prompt("请输入假名（片假名）：", myCustomKana || currentKana);
             if (userInput !== null) {
-                const trimmedInput = userInput.trim();
-                if (trimmedInput) {
-                    myCustomName = trimmedInput;
-                    currentKatakanaName = convertRomajiToKatakana(myCustomName);
-                    localStorage.setItem('STAY_CUSTOM_VISUAL_NAME', myCustomName);
-                    cleanWebPageVisuals();
+                const trimmed = userInput.trim();
+                if (trimmed) {
+                    myCustomKana = trimmed;
+                    localStorage.setItem('STAY_CUSTOM_VISUAL_KANA', myCustomKana);
+                } else {
+                    myCustomKana = '';
+                    localStorage.removeItem('STAY_CUSTOM_VISUAL_KANA');
+                }
+                cleanWebPageVisuals();
+            }
+            return;
+        }
+
+        // 普通双击 修改所有信息
+        if (text.includes('会員情報') || text.includes('会员') || text.includes('チケット') || text.includes('券')) {
+            // 第一步：输入英文名
+            let nameInput = prompt("请输入英文名字（姓氏+名字，用空格分开）：", myCustomName || "DONG MENGYUAN");
+            if (nameInput === null) return;
+            nameInput = nameInput.trim();
+            if (!nameInput) return;
+            
+            myCustomName = nameInput;
+            localStorage.setItem('STAY_CUSTOM_VISUAL_NAME', myCustomName);
+            
+            // 自动转换假名（如果用户没有手动设置过）
+            if (!myCustomKana) {
+                myCustomKana = convertRomajiToKatakana(myCustomName);
+                localStorage.setItem('STAY_CUSTOM_VISUAL_KANA', myCustomKana);
+            }
+            
+            // 第二步：输入生年月日
+            let birthInput = prompt("请输入生年月日（格式如：1990/01/01 或 1990年1月1日）：", myCustomBirth || "1990/01/01");
+            if (birthInput !== null) {
+                birthInput = birthInput.trim();
+                if (birthInput) {
+                    myCustomBirth = birthInput;
+                    localStorage.setItem('STAY_CUSTOM_VISUAL_BIRTH', myCustomBirth);
+                } else {
+                    myCustomBirth = '';
+                    localStorage.removeItem('STAY_CUSTOM_VISUAL_BIRTH');
                 }
             }
+            
+            // 第三步：输入性别
+            let genderInput = prompt("请输入性别（男性请输入：男性，男性1，男性2 等）：", myCustomGender || "男性");
+            if (genderInput !== null) {
+                genderInput = genderInput.trim();
+                if (genderInput) {
+                    myCustomGender = genderInput;
+                    localStorage.setItem('STAY_CUSTOM_VISUAL_GENDER', myCustomGender);
+                } else {
+                    myCustomGender = '';
+                    localStorage.removeItem('STAY_CUSTOM_VISUAL_GENDER');
+                }
+            }
+            
+            cleanWebPageVisuals();
         }
     });
 
