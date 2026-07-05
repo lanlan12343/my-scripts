@@ -217,14 +217,14 @@
                 if (lines && lines.length > 0) {
                     const firstLineText = lines[0].trim();
                     const expectedLine = myCustomName + "(" + katakanaName + ")";
-                    if (myCustomName && firstLineText !== myCustomName && firstLineText !== expectedLine && !html.includes('決済') && !html.includes('结算')) {
+                    if (myCustomName && firstLineText !== myCustomName && firstLineText !== expectedLine && !html.includes('決済') && !html.includes('结算') && !html.includes('整理番') && !html.includes('整理号')) {
                         lines[0] = expectedLine; 
                         content.innerHTML = lines.join('<br>');
                     }
                 }
             } else {
                 const textTrim = content.textContent.trim();
-                if (myCustomName && textTrim && textTrim !== myCustomName && !textTrim.includes('決済') && !textTrim.includes('结算') && textTrim.length < 30) {
+                if (myCustomName && textTrim && textTrim !== myCustomName && !textTrim.includes('決済') && !textTrim.includes('结算') && !textTrim.includes('整理番') && !textTrim.includes('整理号') && textTrim.length < 30) {
                     content.innerHTML = myCustomName;
                 }
             }
