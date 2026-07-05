@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         LivePocket 姓名切换器
+// @name         LivePocket 姓名切换
 // @version      2.0
 // @description  在 LivePocket 上自定义显示姓名
 // @author       andy lin
