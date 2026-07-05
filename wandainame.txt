@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         万代姓名修改
 // @namespace    Andy LI
-// @version      4.5
+// @version      4.6
 // @description  lanlan
 // @match        *://*/*
 // @grant        none
