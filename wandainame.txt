@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         万代姓名修改
 // @namespace    Andy LI
-// @version      4.6
+// @version      4.7
 // @description  lanlan
 // @match        *://*/*
 // @grant        none
@@ -199,10 +199,14 @@
 
         const katakanaName = getKatakanaName();
 
-        // 适配
+        // 入场票一览
         const couponNameNodes = document.querySelectorAll('.block-mypage-coupon-list-item-code-value');
         couponNameNodes.forEach(node => {
-            if (myCustomName && node.textContent.trim() !== myCustomName && !node.textContent.includes('EC-')) {
+            const text = node.textContent.trim();
+            // 跳过整理番号（EC-开头）和其他非姓名内容
+            if (text.includes('EC-') || text.includes('整理')) return;
+            // 只修改看起来像名字的内容（英文或日文）
+            if (myCustomName && text !== myCustomName && /^[A-Za-z\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF\s]+$/.test(text) && text.length < 30) {
                 node.textContent = myCustomName;
             }
         });
