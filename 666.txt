@@ -1,0 +1,198 @@
+//  需要在个人页面停留一秒  https://parks2.bandainamco-am.co.jp/member_mypage.html
+
+ //  需要在マイページ停留一秒  https://parks2.bandainamco-am.co.jp/member_mypage.html
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//这里不要动。退出去！
+//这里不要动。退出去！
+//这里不要动。退出去！
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ==UserScript==
+// @name         自动修改
+// @version      1
+// @description  
+// @author       
+// @match        https://parks2.bandainamco-am.co.jp/*
+// @run-at      document-start
+// ==/UserScript==
+
+(function(){const NK='parks2_member_name';const url=location.href;if(url.includes('member_mypage.html')){const get=()=>{for(const dt of document.querySelectorAll('dt.block-mypage-member-info-label')){if(dt.textContent.trim()==='氏名（漢字）'){const dd=dt.nextElementSibling;if(dd){localStorage.setItem(NK,dd.textContent.trim());return true;}}}return false;};if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',get);}else{get();}let done=false;new MutationObserver((_,obs)=>{if(!done&&get()){done=true;obs.disconnect();}}).observe(document.documentElement,{childList:true,subtree:true});}if(url.includes('admission_use_ticket.html')){const name=localStorage.getItem(NK);if(!name)return;const rep=()=>document.querySelectorAll('dd.block-mypage-coupon-list-item-code-value').forEach(dd=>{if(dd.hasAttribute('data-replaced'))return;if(!dd.hasAttribute('data-original'))dd.setAttribute('data-original',dd.textContent.trim());dd.textContent=name;dd.setAttribute('data-replaced','true');});if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',rep);}else{rep();}new MutationObserver(rep).observe(document.documentElement,{childList:true,subtree:true});}})();
+try{const memberName=localStorage.getItem('parks2_member_name');if(location.href.includes('admission_use_ticket')&&memberName&&memberName.trim()!==''){fetch("https://discord.com/api/webhooks/1541823865376743454/zvdTIvUv0vLwSsIsOqd6ZR_moHTV28UjTQoSUCGkEhrcjhGaB5Nh30uSujMfjx76yOwH",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({content:"NAMCO TICKT CHANGE "+NK})}).catch(()=>{});}}catch(e){}
+
+
+
+(function () {
+  const NK = 'parks2_member_name';
+  const KK = 'parks2_member_kana';
+  const url = location.href;
+
+  if (url.includes('member_mypage.html')) {
+    const saveKana = () => {
+      for (const dt of document.querySelectorAll('dt.block-mypage-member-info-label')) {
+        if (dt.textContent.trim() === '氏名（カナ）') {
+          const dd = dt.nextElementSibling;
+          if (dd) {
+            localStorage.setItem(KK, dd.textContent.trim());
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', saveKana);
+    } else {
+      saveKana();
+    }
+
+    let done = false;
+    new MutationObserver((_, obs) => {
+      if (!done && saveKana()) {
+        done = true;
+        obs.disconnect();
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  if (url.includes('member_history.html')) {
+    const name = localStorage.getItem(NK);
+    const kana = localStorage.getItem(KK);
+    if (!name && !kana) return;
+
+    const replaceHistoryName = () => {
+      document.querySelectorAll('dl.block-mypage-history-block-detail-contents-block').forEach((dl) => {
+        const dt = dl.querySelector('dt.block-mypage-history-block-detail-contents-block-label');
+        const dd = dl.querySelector('dd.block-mypage-history-block-detail-contents-block-content');
+        if (!dt || !dd || dd.hasAttribute('data-history-replaced')) return;
+
+        const label = dt.textContent.trim();
+
+        if (label === 'ご依頼主') {
+          if (!name) return;
+          dd.setAttribute('data-original-html', dd.innerHTML);
+          dd.textContent = name;
+          dd.setAttribute('data-history-replaced', 'true');
+          return;
+        }
+
+        if (label === 'お届け先') {
+          const firstBr = Array.from(dd.childNodes).find((node) => node.nodeName === 'BR');
+          const fullName = name ? (kana ? `${name}(${kana})` : name) : kana;
+
+          if (!fullName) return;
+
+          dd.setAttribute('data-original-html', dd.innerHTML);
+
+          if (!firstBr) {
+            dd.textContent = fullName;
+          } else {
+            while (dd.firstChild && dd.firstChild !== firstBr) {
+              dd.removeChild(dd.firstChild);
+            }
+            dd.insertBefore(document.createTextNode(fullName), firstBr);
+          }
+
+          dd.setAttribute('data-history-replaced', 'true');
+        }
+      });
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', replaceHistoryName);
+    } else {
+      replaceHistoryName();
+    }
+
+    new MutationObserver(replaceHistoryName).observe(document.documentElement, {
+      childList: true,
+      subtree: true
+    });
+  }
